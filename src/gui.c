@@ -83,7 +83,7 @@ void draw_rect_filled(int x, int y, int w, int h, uint8_t color) {
     int i, j;
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            draw_pixel(x+i, y+j, color);
+            framebuffer[(y+j)*80 + (x+i)] = ((uint16_t)color << 8) | ' ';
         }
     }
 }
@@ -289,9 +289,8 @@ void gui_demo(void) {
                 while (lbl[lbl_len]) lbl_len++;
                 int text_col = bx + (btn_w - lbl_len) / 2;
                 int text_row = by + btn_h / 2;
-                /* Choose text color: black on bright, white on dark */
-                uint8_t text_color = COLOR_BLACK;
-                if (i == 2 || i == 5) text_color = COLOR_WHITE;
+                /* Always use WHITE text for maximum contrast and visibility */
+                uint8_t text_color = COLOR_WHITE;
                 int k;
                 for (k = 0; lbl[k] && (text_col + k) < 80; k++) {
                     framebuffer[text_row * 80 + text_col + k] = 
@@ -319,6 +318,9 @@ void gui_demo(void) {
         if (mx > 0 && my > 0)
             draw_pixel(mx - 1, my - 1, COLOR_WHITE);
         
+        /* Clear row 23 first, then draw the position display */
+        draw_rect_filled(0, 23, 80, 1, COLOR_DARK_GREY);
+        
         /* Mouse position display - shows coords from top-left (0,0) */
         const char* pos_msg = "Mouse X,Y: ";
         int label_col = 0;
@@ -328,24 +330,17 @@ void gui_demo(void) {
         }
         int col = label_col + x;  /* column after label */
         
-        /* Helper: write a number at the current column, advance col */
-        char num_buf[8];
-        int n = 0;
-        int v = mx;
-        if (v == 0) {
-            num_buf[n++] = '0';
-        } else {
-            char tmp[8];
-            int t = 0;
-            while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
-            while (t > 0) num_buf[n++] = tmp[--t];
-        }
-        num_buf[n] = '\0';
-        
-        /* Write X */
-        for (x = 0; num_buf[x] && col < 80; x++) {
-            framebuffer[23 * 80 + col++] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
+        /* Write X with fixed width (2 digits, zero-padded) */
+        {
+            int v = mx;
+            char digits[3];
+            digits[0] = '0' + ((v / 10) % 10);
+            digits[1] = '0' + (v % 10);
+            digits[2] = '\0';
+            for (x = 0; digits[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | digits[x];
+            }
         }
         
         /* Comma separator */
@@ -354,21 +349,17 @@ void gui_demo(void) {
                 ((uint16_t)COLOR_DARK_GREY << 8) | ',';
         }
         
-        /* Write Y */
-        n = 0;
-        v = my;
-        if (v == 0) {
-            num_buf[n++] = '0';
-        } else {
-            char tmp[8];
-            int t = 0;
-            while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
-            while (t > 0) num_buf[n++] = tmp[--t];
-        }
-        num_buf[n] = '\0';
-        for (x = 0; num_buf[x] && col < 80; x++) {
-            framebuffer[23 * 80 + col++] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
+        /* Write Y with fixed width (2 digits, zero-padded) */
+        {
+            int v = my;
+            char digits[3];
+            digits[0] = '0' + ((v / 10) % 10);
+            digits[1] = '0' + (v % 10);
+            digits[2] = '\0';
+            for (x = 0; digits[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | digits[x];
+            }
         }
         
         /* Show which button was clicked last or currently being held */
