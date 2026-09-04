@@ -145,7 +145,6 @@ void gui_demo(void) {
     int anim_x = 10, anim_y = 5;
     int dx = 1, dy = 1;
     int x;
-    int last_mouse_x = -1, last_mouse_y = -1;
     
     /* Button layout: 6 buttons in a row */
     #define NUM_BUTTONS 6
@@ -164,43 +163,66 @@ void gui_demo(void) {
     int pressed_btn = -1;
     int last_clicked = -1;
     int prev_left = 0;
+    int press_btn_idx = -1;  /* which button was being pressed */
+    int hovered_btn = -1;    /* which button the mouse is currently over */
     uint8_t bg_color = COLOR_BLACK;
     
     while (1) {
-        /* Poll mouse for updates */
-        mouse_poll();
+        /* Poll mouse multiple times to catch fast events */
+        int poll_iter;
+        for (poll_iter = 0; poll_iter < 16; poll_iter++) {
+            mouse_poll();
+        }
         int mx = mouse_get_x();
         int my = mouse_get_y();
         int btns = mouse_get_buttons();
+        int click_happened = mouse_consume_click();
         
-        /* Check if left button is pressed and on a button */
+        /* Determine which button (if any) the mouse is currently over */
+        hovered_btn = -1;
+        {
+            int i;
+            for (i = 0; i < NUM_BUTTONS; i++) {
+                int bx = btn_x_start + i * (btn_w + btn_spacing);
+                if (mx >= bx && mx < bx + btn_w &&
+                    my >= btn_y && my < btn_y + btn_h) {
+                    hovered_btn = i;
+                    break;
+                }
+            }
+        }
+        
+        /* Detect left button transitions */
+        int left_now = (btns & 0x01) ? 1 : 0;
+        int left_pressed = left_now && !prev_left;  /* just pressed */
+        int left_released = !left_now && prev_left; /* just released */
+        
+        /* When left button is just pressed, record which button (if any) */
+        if (left_pressed) {
+            press_btn_idx = hovered_btn;
+        }
+        
+        /* Highlight the button while it is being held down */
         pressed_btn = -1;
-        if (btns & 0x01) {
-            int i;
-            for (i = 0; i < NUM_BUTTONS; i++) {
-                int bx = btn_x_start + i * (btn_w + btn_spacing);
-                if (mx >= bx && mx < bx + btn_w &&
-                    my >= btn_y && my < btn_y + btn_h) {
-                    pressed_btn = i;
-                    break;
-                }
-            }
+        if (left_now && press_btn_idx >= 0) {
+            pressed_btn = press_btn_idx;
         }
         
-        /* When left button is RELEASED, if it was on a button, "click" it */
-        if ((prev_left & 0x01) && !(btns & 0x01)) {
-            int i;
-            for (i = 0; i < NUM_BUTTONS; i++) {
-                int bx = btn_x_start + i * (btn_w + btn_spacing);
-                if (mx >= bx && mx < bx + btn_w &&
-                    my >= btn_y && my < btn_y + btn_h) {
-                    last_clicked = i;
-                    bg_color = btn_colors[i];
-                    break;
-                }
-            }
+        /* When left button is RELEASED, trigger click if it was a button */
+        if (left_released && press_btn_idx >= 0) {
+            /* Click the button that was originally pressed */
+            last_clicked = press_btn_idx;
+            bg_color = btn_colors[press_btn_idx];
+            press_btn_idx = -1;
         }
-        prev_left = btns;
+        
+        /* Catch-all: if mouse driver reported a click event we missed
+         * (fast press/release between frames), use the hovered button */
+        if (click_happened && hovered_btn >= 0) {
+            last_clicked = hovered_btn;
+            bg_color = btn_colors[hovered_btn];
+        }
+        prev_left = left_now;
         
         gui_clear(bg_color);
         
@@ -279,18 +301,23 @@ void gui_demo(void) {
         }
         
         /* Mouse ball - tracks mouse position */
-        /* Draw mouse ball with a colored outline based on button state */
+        /* Draw a bigger mouse ball */
         uint8_t mouse_color = COLOR_WHITE;
         if (btns & 0x01) mouse_color = COLOR_RED;  /* Left click */
         if (btns & 0x02) mouse_color = COLOR_BLUE; /* Right click */
         if ((btns & 0x03) == 0x03) mouse_color = COLOR_LIGHT_MAGENTA;
         
-        /* Draw a 3x3 ball with crosshair pattern */
-        draw_circle_filled(mx, my, 1, mouse_color);
+        /* Outer ring (3D shadow) */
+        draw_circle(mx, my, 4, COLOR_DARK_GREY);
         /* Outline */
-        draw_circle(mx, my, 2, COLOR_LIGHT_GREY);
+        draw_circle(mx, my, 3, COLOR_LIGHT_GREY);
+        /* Big filled ball */
+        draw_circle_filled(mx, my, 2, mouse_color);
         /* Center dot */
         draw_pixel(mx, my, COLOR_BLACK);
+        /* Highlight pixel */
+        if (mx > 0 && my > 0)
+            draw_pixel(mx - 1, my - 1, COLOR_WHITE);
         
         /* Mouse position display - shows coords from top-left (0,0) */
         const char* pos_msg = "Mouse X,Y: ";
@@ -344,8 +371,19 @@ void gui_demo(void) {
                 ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
         }
         
-        /* Show which button was clicked last */
-        if (last_clicked >= 0) {
+        /* Show which button was clicked last or currently being held */
+        if (pressed_btn >= 0) {
+            const char* pressing_msg = "  Holding: ";
+            for (x = 0; pressing_msg[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | pressing_msg[x];
+            }
+            const char* cname = btn_labels[pressed_btn];
+            for (x = 0; cname[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | cname[x];
+            }
+        } else if (last_clicked >= 0) {
             const char* clicked_msg = "  BG: ";
             for (x = 0; clicked_msg[x] && col < 80; x++) {
                 framebuffer[23 * 80 + col++] = 

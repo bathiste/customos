@@ -57,6 +57,10 @@ static uint8_t mouse_cycle = 0;
 static int8_t mouse_dx[3];
 static int8_t mouse_dy[3];
 
+/* Click event tracking - to detect rapid press/release */
+static int click_event = 0;     /* 1 = a click (press+release) has been detected */
+static int prev_left_state = 0; /* tracked across packet boundaries */
+
 /* Enable auxiliary mouse device */
 void mouse_init(void) {
     /* Enable auxiliary mouse port */
@@ -107,7 +111,18 @@ void mouse_handle_byte(uint8_t byte) {
         mouse_cycle = 0;
         
         /* Extract buttons */
-        mouse_buttons = mouse_dx[0] & 0x07;
+        int new_buttons = mouse_dx[0] & 0x07;
+        int new_left = (new_buttons & 0x01) ? 1 : 0;
+        
+        /* Detect click event: left button was pressed in a previous packet
+         * and is now released. This captures rapid clicks that may happen
+         * between successive polls. */
+        if (prev_left_state == 1 && new_left == 0) {
+            click_event = 1;
+        }
+        prev_left_state = new_left;
+        
+        mouse_buttons = new_buttons;
         
         /* Extract signed deltas */
         int dx = mouse_dx[1];
@@ -122,6 +137,12 @@ void mouse_handle_byte(uint8_t byte) {
         if (mouse_y < 0) mouse_y = 0;
         if (mouse_y > 24) mouse_y = 24;
     }
+}
+
+int mouse_consume_click(void) {
+    int was_click = click_event;
+    click_event = 0;
+    return was_click;
 }
 
 /* Call this regularly to keep mouse state updated */
