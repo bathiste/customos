@@ -205,46 +205,63 @@ void gui_demo(void) {
         /* Center dot */
         draw_pixel(mx, my, COLOR_BLACK);
         
-        /* Mouse position display */
-        const char* pos_msg = "Mouse:";
-        for (x = 0; pos_msg[x]; x++) {
-            int py = 23;
-            framebuffer[py * 80 + x] = 
+        /* Mouse position display - shows coords from top-left (0,0) */
+        const char* pos_msg = "Mouse X,Y: ";
+        int label_col = 0;
+        for (x = 0; pos_msg[x] && (label_col + x) < 80; x++) {
+            framebuffer[23 * 80 + label_col + x] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | pos_msg[x];
         }
-        /* Draw coordinates */
+        int col = label_col + x;  /* column after label */
+        
+        /* Helper: write a number at the current column, advance col */
         char num_buf[8];
         int n = 0;
         int v = mx;
-        if (v == 0) num_buf[n++] = '0';
-        else {
+        if (v == 0) {
+            num_buf[n++] = '0';
+        } else {
             char tmp[8];
             int t = 0;
             while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
             while (t > 0) num_buf[n++] = tmp[--t];
         }
         num_buf[n] = '\0';
-        for (x = 0; num_buf[x]; x++) {
-            int py = 23;
-            framebuffer[py * 80 + 7 + x] = 
+        
+        /* Write X */
+        for (x = 0; num_buf[x] && col < 80; x++) {
+            framebuffer[23 * 80 + col++] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
         }
-        framebuffer[23 * 80 + 7 + n] = 
-            ((uint16_t)COLOR_DARK_GREY << 8) | ',';
-        n++;
+        
+        /* Comma separator */
+        if (col < 80) {
+            framebuffer[23 * 80 + col++] = 
+                ((uint16_t)COLOR_DARK_GREY << 8) | ',';
+        }
+        
+        /* Write Y */
+        n = 0;
         v = my;
-        if (v == 0) num_buf[n++] = '0';
-        else {
+        if (v == 0) {
+            num_buf[n++] = '0';
+        } else {
             char tmp[8];
             int t = 0;
             while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
             while (t > 0) num_buf[n++] = tmp[--t];
         }
         num_buf[n] = '\0';
-        int start_y = 7 + 1;
-        for (x = 0; num_buf[x]; x++) {
-            framebuffer[23 * 80 + start_y + x] = 
+        for (x = 0; num_buf[x] && col < 80; x++) {
+            framebuffer[23 * 80 + col++] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
+        }
+        
+        /* Range info: (0..79, 0..24) */
+        const char* range_msg = "  (0..79, 0..24)";
+        for (x = 0; range_msg[x] && col < 80; x++) {
+            framebuffer[23 * 80 + col++] = 
+                ((uint16_t)COLOR_DARK_GREY << 8) | range_msg[x];
         }
         
         /* Status bar */
