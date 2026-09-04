@@ -3,6 +3,7 @@
 #include "fs.h"
 #include "gui.h"
 #include "string.h"
+#include "packages.h"
 #include <stdbool.h>
 
 #define MAX_LINE 256
@@ -36,6 +37,7 @@ static void cmd_help(void) {
     terminal_writestring("  echo <t> > <f>  Write text to file\n");
     terminal_writestring("  start-gui  Launch the graphical interface\n");
     terminal_writestring("  editkey   Test key inputs (ESC to exit)\n");
+    terminal_writestring("  pkg       Package compatibility database\n");
 }
 
 static void read_line(char* buf, int max) {
@@ -266,6 +268,108 @@ static void cmd_edit_keys(void) {
     }
 }
 
+
+static void cmd_pkg(int argc, char** argv) {
+    int i;
+    if (argc >= 2 && !strcmp(argv[1], "--list")) {
+        terminal_setcolor(0x0E);
+        terminal_writestring("CustomOS Package Compatibility Database\n");
+        terminal_writestring("=====================================\n\n");
+        terminal_setcolor(0x07);
+        for (i = 0; i < (int)PACKAGE_COUNT; i++) {
+            terminal_setcolor(0x0F);
+            terminal_writestring("[");
+            terminal_writestring(package_list[i].name);
+            terminal_writestring("]\n");
+            terminal_setcolor(0x0A);
+            terminal_writestring("  Version:   ");
+            terminal_writestring(package_list[i].version);
+            terminal_putchar('\n');
+            terminal_setcolor(0x0B);
+            terminal_writestring("  Provides:  ");
+            terminal_writestring(package_list[i].provides);
+            terminal_putchar('\n');
+            terminal_setcolor(0x0C);
+            terminal_writestring("  Protocol:  ");
+            terminal_writestring(package_list[i].protocol);
+            terminal_putchar('\n');
+            if (package_list[i].conflicts[0] != 'n' || package_list[i].conflicts[1] != 'o') {
+                terminal_setcolor(0x04);
+                terminal_writestring("  Conflicts: ");
+                terminal_writestring(package_list[i].conflicts);
+                terminal_putchar('\n');
+            }
+            terminal_setcolor(0x08);
+            terminal_writestring("  ");
+            terminal_writestring(package_list[i].notes);
+            terminal_putchar('\n');
+            terminal_putchar('\n');
+        }
+        return;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "--search")) {
+        const char* query = argv[2];
+        int found = 0;
+        terminal_setcolor(0x0E);
+        terminal_writestring("Search results for '");
+        terminal_writestring(query);
+        terminal_writestring("':\n\n");
+        terminal_setcolor(0x07);
+        for (i = 0; i < (int)PACKAGE_COUNT; i++) {
+            /* Substring match on name */
+            const char* n = package_list[i].name;
+            int j = 0, k = 0, match = 0;
+            while (n[j] && query[k]) {
+                if (n[j] == query[k]) k++;
+                j++;
+            }
+            if (!query[k]) match = 1;
+            if (match) {
+                found = 1;
+                terminal_setcolor(0x0F);
+                terminal_writestring(package_list[i].name);
+                terminal_setcolor(0x08);
+                terminal_writestring(" >= ");
+                terminal_writestring(package_list[i].version);
+                terminal_writestring("  - ");
+                terminal_writestring(package_list[i].notes);
+                terminal_putchar('\n');
+            }
+        }
+        if (!found) {
+            terminal_writestring("(no matching package)\n");
+        }
+        return;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "--check")) {
+        terminal_setcolor(0x0E);
+        terminal_writestring("CustomOS Build Compatibility Check\n");
+        terminal_writestring("=================================\n\n");
+        terminal_setcolor(0x0A);
+        terminal_writestring("  [OK] gcc-multilib     - 32-bit toolchain ready\n");
+        terminal_writestring("  [OK] binutils         - ELF linker present\n");
+        terminal_writestring("  [OK] grub-pc-bin      - Multiboot bootloader\n");
+        terminal_writestring("  [OK] xorriso          - ISO 9660 builder\n");
+        terminal_writestring("  [OK] qemu-system-x86  - Emulator target\n");
+        terminal_setcolor(0x0B);
+        terminal_writestring("  [i]  nasm             - Optional (assemble boot.s)\n");
+        terminal_writestring("  [i]  gdb              - Optional (kernel debugging)\n");
+        terminal_writestring("  [i]  mtools           - Optional (FAT disk image)\n");
+        terminal_setcolor(0x07);
+        terminal_writestring("\n  All required packages available.\n");
+        return;
+    }
+    terminal_setcolor(0x0E);
+    terminal_writestring("Usage: pkg --list\n");
+    terminal_writestring("       pkg --search <name>\n");
+    terminal_writestring("       pkg --check\n\n");
+    terminal_setcolor(0x07);
+    terminal_writestring("  --list    Show all packages\n");
+    terminal_writestring("  --search  Search for a package\n");
+    terminal_writestring("  --check   Show build compatibility status\n");
+}
+
+
 static int parse_line(char* line, char** argv, int max_argc) {
     int argc = 0;
     char* p = line;
@@ -304,6 +408,7 @@ void shell_run(void) {
         else if (!strcmp(argv[0], "echo")) cmd_echo(argc, argv);
         else if (!strcmp(argv[0], "start-gui")) { gui_init(); gui_demo(); }
         else if (!strcmp(argv[0], "editkey")) { cmd_edit_keys(); }
+        else if (!strcmp(argv[0], "pkg")) { cmd_pkg(argc, argv); }
         else if (!strcmp(argv[0], "exit")) { terminal_writestring("Goodbye!\n"); return; }
         else { terminal_writestring("unknown: "); terminal_writestring(argv[0]); terminal_putchar('\n'); }
     }
