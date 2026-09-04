@@ -49,30 +49,80 @@ static uint16_t g_rx_avail_idx = 0;
 static uint16_t g_tx_avail_idx = 0;
 static uint16_t g_last_rx_idx = 0;
 
-static uint16_t find_iobase(const pci_device_t* dev) {
-    uint32_t bar = pci_get_bar(dev, 0);
-    if ((bar & 0x01) == 0) {
-        return 0;
-    }
-    return (uint16_t)(bar & ~0x03);
+/* -------------------------------------------------------------------------
+ * Access path. We support two backends:
+ *   - Legacy (transitional) virtio: 8-bit I/O port register interface
+ *   - Modern virtio 1.0: 32-bit little-endian MMIO register interface
+ *
+ * `g_virtio.iobase` is either a 16-bit I/O port (legacy) or a 32-bit
+ * physical MMIO address (modern). `g_is_modern` selects the path.
+ * --------------------------------------------------------------------- */
+
+/* Modern virtio uses MMIO with 32-bit little-endian registers at fixed
+ * offsets in the BAR. For modern devices the BAR is memory-space, and
+ * the driver interacts with it through volatile pointers. */
+static uint32_t g_mmio_base_phys = 0;
+static volatile uint8_t* g_mmio_base = (volatile uint8_t*)0;
+static int  g_is_modern = 0;
+
+static inline volatile uint8_t* mmio_ptr(uint32_t reg) {
+    return g_mmio_base + reg;
 }
 
 static void virtio_write8(uint16_t base, uint8_t reg, uint8_t val) {
-    outb(base + reg, val);
+    if (g_is_modern) {
+        /* Modern virtio has no 8-bit register access; we must RMW a 32-bit slot. */
+        uint32_t off = reg & ~3;
+        uint32_t shift = (reg & 3) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t v = *p;
+        v = (v & ~(0xFFu << shift)) | ((uint32_t)val << shift);
+        *p = v;
+    } else {
+        outb(base + reg, val);
+    }
 }
 static uint8_t virtio_read8(uint16_t base, uint8_t reg) {
+    if (g_is_modern) {
+        uint32_t off = reg & ~3;
+        uint32_t shift = (reg & 3) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        return (uint8_t)((*p >> shift) & 0xFF);
+    }
     return inb(base + reg);
 }
 static void virtio_write16(uint16_t base, uint8_t reg, uint16_t val) {
-    outw(base + reg, val);
+    if (g_is_modern) {
+        uint32_t off = reg & ~2;
+        uint32_t shift = (reg & 2) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t v = *p;
+        v = (v & ~(0xFFFFu << shift)) | ((uint32_t)val << shift);
+        *p = v;
+    } else {
+        outw(base + reg, val);
+    }
 }
 static uint16_t virtio_read16(uint16_t base, uint8_t reg) {
+    if (g_is_modern) {
+        uint32_t off = reg & ~2;
+        uint32_t shift = (reg & 2) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        return (uint16_t)((*p >> shift) & 0xFFFF);
+    }
     return inw(base + reg);
 }
 static void virtio_write32(uint16_t base, uint8_t reg, uint32_t val) {
-    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"((uint16_t)(base + reg)));
+    if (g_is_modern) {
+        *(volatile uint32_t*)mmio_ptr(reg) = val;
+    } else {
+        __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"((uint16_t)(base + reg)));
+    }
 }
 static uint32_t virtio_read32(uint16_t base, uint8_t reg) {
+    if (g_is_modern) {
+        return *(volatile uint32_t*)mmio_ptr(reg);
+    }
     uint32_t val;
     __asm__ volatile ("inl %1, %0" : "=a"(val) : "Nd"((uint16_t)(base + reg)));
     return val;
@@ -88,8 +138,31 @@ static void virtio_wait_for(uint16_t base, uint8_t reg, uint32_t mask, uint32_t 
     }
 }
 
+/* Modern virtio register offsets (from the BAR base, 32-bit LE MMIO) */
+#define VIRTIO_MODERN_MAGIC         0x000
+#define VIRTIO_MODERN_VERSION       0x004
+#define VIRTIO_MODERN_DEVICE_ID     0x008
+#define VIRTIO_MODERN_VENDOR_ID     0x00C
+#define VIRTIO_MODERN_DEV_FEATURES  0x010
+#define VIRTIO_MODERN_DEV_FEATURES_SEL 0x014
+#define VIRTIO_MODERN_DRV_FEATURES  0x020
+#define VIRTIO_MODERN_DRV_FEATURES_SEL 0x024
+#define VIRTIO_MODERN_QUEUE_SEL     0x030
+#define VIRTIO_MODERN_QUEUE_NUM_MAX 0x034
+#define VIRTIO_MODERN_QUEUE_ENABLE  0x038
+#define VIRTIO_MODERN_QUEUE_DESC_LO 0x040
+#define VIRTIO_MODERN_QUEUE_DESC_HI 0x044
+#define VIRTIO_MODERN_QUEUE_AVAIL_LO 0x048
+#define VIRTIO_MODERN_QUEUE_AVAIL_HI 0x04C
+#define VIRTIO_MODERN_QUEUE_USED_LO 0x050
+#define VIRTIO_MODERN_QUEUE_USED_HI 0x054
+#define VIRTIO_MODERN_QUEUE_NOTIFY  0x064
+#define VIRTIO_MODERN_STATUS        0x070
+#define VIRTIO_MODERN_CONFIG_BASE   0x100
+
 void virtio_init(void) {
-    /* Find VirtIO network device */
+    /* Find VirtIO network device. We try the modern ID first (0x1041)
+       and fall back to the transitional legacy ID (0x1000). */
     const pci_device_t* dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_PCI_ID_NET);
     if (!dev) {
         dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_LEGACY_ID_NET);
@@ -106,39 +179,70 @@ void virtio_init(void) {
 
     terminal_writestring("[virtio] Found virtio-net device.\n");
 
-    uint16_t iobase = find_iobase(dev);
-    if (!iobase) {
-        terminal_writestring("[virtio] No I/O base found.\n");
-        return;
-    }
-
-    g_virtio.iobase = iobase;
-    g_virtio.present = 0;
-
     pci_enable_device(dev);
 
-    virtio_write8(iobase, VIRTIO_REG_DEVICE_STATUS, 0);
-    virtio_wait_for(iobase, VIRTIO_REG_DEVICE_STATUS, 0xFF, 0);
+    /* Inspect BAR0.
+       bit 0 = 1   => I/O space (legacy)
+       bit 0 = 0   => MMIO       (modern) */
+    uint32_t bar0 = pci_get_bar(dev, 0);
+    if (bar0 & 0x01) {
+        g_is_modern = 0;
+        g_virtio.iobase = (uint16_t)(bar0 & ~0x03u);
+    } else {
+        g_is_modern = 1;
+        g_mmio_base_phys = bar0 & ~0x0Fu;
+        g_mmio_base = (volatile uint8_t*)(uintptr_t)g_mmio_base_phys;
+        g_virtio.iobase = (uint16_t)g_mmio_base_phys;
 
-    virtio_write8(iobase, VIRTIO_REG_DEVICE_STATUS,
-                  virtio_read8(iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_ACK);
+        uint32_t magic = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_MAGIC);
+        if (magic != 0x74726976u) {
+            terminal_writestring("[virtio] MMIO magic mismatch.\n");
+            return;
+        }
+        uint32_t ver = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_VERSION);
+        terminal_writestring("       virtio 1.0, version=");
+        print_int(ver);
+        terminal_writestring("\n");
+    }
 
-    virtio_write8(iobase, VIRTIO_REG_DEVICE_STATUS,
-                  virtio_read8(iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER);
+    g_virtio.present = 0;
 
-    uint32_t dev_features = virtio_read32(iobase, VIRTIO_REG_GUEST_FEATURES);
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, 0);
+    virtio_wait_for(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, 0xFF, 0);
+
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
+                  virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_ACK);
+
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
+                  virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER);
+
+    /* Read device features.
+       Legacy: GUEST_FEATURES register holds features directly.
+       Modern: features are paged via *_SEL registers. */
+    uint32_t dev_features;
+    if (g_is_modern) {
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_DEV_FEATURES_SEL) = 0;
+        dev_features = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_DEV_FEATURES);
+    } else {
+        dev_features = virtio_read32(g_virtio.iobase, VIRTIO_REG_GUEST_FEATURES);
+    }
 
     uint32_t driver_features = 0;
     if (dev_features & (1U << VIRTIO_NET_F_MAC)) {
         driver_features |= (1U << VIRTIO_NET_F_MAC);
     }
 
-    virtio_write32(iobase, VIRTIO_REG_GUEST_FEATURES, driver_features);
+    if (g_is_modern) {
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_DRV_FEATURES_SEL) = 0;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_DRV_FEATURES) = driver_features;
+    } else {
+        virtio_write32(g_virtio.iobase, VIRTIO_REG_GUEST_FEATURES, driver_features);
+    }
 
-    virtio_write8(iobase, VIRTIO_REG_DEVICE_STATUS,
-                  virtio_read8(iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_FEATURES_OK);
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
+                  virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_FEATURES_OK);
 
-    uint8_t status = virtio_read8(iobase, VIRTIO_REG_DEVICE_STATUS);
+    uint8_t status = virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS);
     if (status & VIRTIO_STATUS_NEEDS_RESET) {
         terminal_writestring("[virtio] Device requires reset.\n");
         return;
@@ -151,8 +255,19 @@ void virtio_init(void) {
     g_virtio.features = driver_features;
 
     int i;
-    for (i = 0; i < 6; i++) {
-        g_virtio.mac[i] = virtio_read8(iobase, VIRTIO_REG_DEVICE_CONFIG + i);
+    if (g_is_modern) {
+        uint32_t w0 = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_CONFIG_BASE + 0);
+        uint16_t w1 = *(volatile uint16_t*)mmio_ptr(VIRTIO_MODERN_CONFIG_BASE + 4);
+        g_virtio.mac[0] = (uint8_t)(w0      );
+        g_virtio.mac[1] = (uint8_t)(w0 >>  8);
+        g_virtio.mac[2] = (uint8_t)(w0 >> 16);
+        g_virtio.mac[3] = (uint8_t)(w0 >> 24);
+        g_virtio.mac[4] = (uint8_t)(w1      );
+        g_virtio.mac[5] = (uint8_t)(w1 >>  8);
+    } else {
+        for (i = 0; i < 6; i++) {
+            g_virtio.mac[i] = virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_CONFIG + i);
+        }
     }
     terminal_writestring("       MAC: ");
     for (i = 0; i < 6; i++) {
@@ -170,8 +285,13 @@ void virtio_init(void) {
     g_vqpool_phys = (uint32_t)(uintptr_t)g_vqpool;
 
     /* RX queue: queue 0 */
-    virtio_write16(iobase, VIRTIO_REG_QUEUE_SEL, 0);
-    uint16_t qsize = virtio_read16(iobase, VIRTIO_REG_QUEUE_NUM);
+    virtio_write16(g_virtio.iobase, VIRTIO_REG_QUEUE_SEL, 0);
+    uint16_t qsize;
+    if (g_is_modern) {
+        qsize = (uint16_t)*(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_NUM_MAX);
+    } else {
+        qsize = virtio_read16(g_virtio.iobase, VIRTIO_REG_QUEUE_NUM);
+    }
     terminal_writestring("       RX queue size: "); print_int(qsize); terminal_putchar('\n');
     if (qsize == 0 || qsize > VIRTIO_QUEUE_SIZE) return;
 
@@ -213,12 +333,26 @@ void virtio_init(void) {
     g_rx_avail->idx = RX_BUF_COUNT;
     g_rx_avail_idx  = RX_BUF_COUNT;
 
-    uint32_t rx_phys = (uint32_t)(uintptr_t)g_rx_desc;
-    virtio_write32(iobase, VIRTIO_REG_QUEUE_PFN, rx_phys >> 12);
+    if (g_is_modern) {
+        uint32_t rx_desc_phys  = (uint32_t)(uintptr_t)g_rx_desc;
+        uint32_t rx_avail_phys = (uint32_t)(uintptr_t)g_rx_avail;
+        uint32_t rx_used_phys  = (uint32_t)(uintptr_t)g_rx_used;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_DESC_LO)  = rx_desc_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_AVAIL_LO) = rx_avail_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_USED_LO)  = rx_used_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_ENABLE)   = 1;
+    } else {
+        uint32_t rx_phys = (uint32_t)(uintptr_t)g_rx_desc;
+        virtio_write32(g_virtio.iobase, VIRTIO_REG_QUEUE_PFN, rx_phys >> 12);
+    }
 
     /* TX queue: queue 1 */
-    virtio_write16(iobase, VIRTIO_REG_QUEUE_SEL, 1);
-    qsize = virtio_read16(iobase, VIRTIO_REG_QUEUE_NUM);
+    virtio_write16(g_virtio.iobase, VIRTIO_REG_QUEUE_SEL, 1);
+    if (g_is_modern) {
+        qsize = (uint16_t)*(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_NUM_MAX);
+    } else {
+        qsize = virtio_read16(g_virtio.iobase, VIRTIO_REG_QUEUE_NUM);
+    }
     terminal_writestring("       TX queue size: "); print_int(qsize); terminal_putchar('\n');
     if (qsize == 0) return;
 
@@ -237,11 +371,21 @@ void virtio_init(void) {
     g_tx_avail->flags = 0; g_tx_avail->idx = 0;
     g_tx_used->flags = 0; g_tx_used->idx = 0;
 
-    uint32_t tx_phys = (uint32_t)(uintptr_t)g_tx_desc;
-    virtio_write32(iobase, VIRTIO_REG_QUEUE_PFN, tx_phys >> 12);
+    if (g_is_modern) {
+        uint32_t tx_desc_phys  = (uint32_t)(uintptr_t)g_tx_desc;
+        uint32_t tx_avail_phys = (uint32_t)(uintptr_t)g_tx_avail;
+        uint32_t tx_used_phys  = (uint32_t)(uintptr_t)g_tx_used;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_DESC_LO)  = tx_desc_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_AVAIL_LO) = tx_avail_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_USED_LO)  = tx_used_phys;
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_ENABLE)   = 1;
+    } else {
+        uint32_t tx_phys = (uint32_t)(uintptr_t)g_tx_desc;
+        virtio_write32(g_virtio.iobase, VIRTIO_REG_QUEUE_PFN, tx_phys >> 12);
+    }
 
-    virtio_write8(iobase, VIRTIO_REG_DEVICE_STATUS,
-        virtio_read8(iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER_OK);
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
+        virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER_OK);
 
     terminal_writestring("       VirtIO-net initialized successfully.\n");
     g_virtio.present = 1;
@@ -278,7 +422,11 @@ int virtio_net_send(const uint8_t* data, uint32_t len) {
     g_tx_avail->ring[g_tx_avail_idx % VIRTIO_QUEUE_SIZE] = (uint16_t)slot;
     g_tx_avail_idx++;
     g_tx_avail->idx = g_tx_avail_idx;
-    virtio_write16(g_virtio.iobase, VIRTIO_REG_QUEUE_NOTIFY, 1);
+    if (g_is_modern) {
+        *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_QUEUE_NOTIFY) = 1;
+    } else {
+        virtio_write16(g_virtio.iobase, VIRTIO_REG_QUEUE_NOTIFY, 1);
+    }
     return 0;
 }
 

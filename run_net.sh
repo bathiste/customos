@@ -1,10 +1,9 @@
 #!/bin/bash
 cd /home/bathist/customos/tries/1
 
-# Run QEMU with virtio-net networking enabled
-# -netdev user: QEMU's built-in NAT (no root required)
-# -device virtio-net-pci: para-virtualized network driver
-# This gives the guest 10.0.2.15 with gateway 10.0.2.2
+# Run QEMU with virtio-net networking enabled.
+# Our driver supports BOTH modern (virtio 1.0) and legacy register
+# layouts, so no special device flag is needed.
 qemu-system-i386 \
     -cdrom customos.iso \
     -boot d \
