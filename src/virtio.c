@@ -19,6 +19,36 @@ static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
 }
 
+/* Boot diagnostics: write a copy of all virtio debug output to COM1
+   (0x3F8) so it appears in QEMU's -serial output and survives any
+   screen clear. This is invaluable when debugging driver init. */
+static void com1_putc(char c) {
+    /* Wait for the UART to be ready (bit 5 of line status = THR empty) */
+    int wait;
+    for (wait = 0; wait < 10000; wait++) {
+        if ((inb(0x3FD) & 0x20) != 0) break;
+    }
+    outb(0x3F8, (uint8_t)c);
+}
+static void com1_puts(const char* s) {
+    while (*s) com1_putc(*s++);
+}
+static void com1_puthex(uint32_t v) {
+    int i;
+    com1_puts("0x");
+    for (i = 7; i >= 0; i--) {
+        uint8_t n = (uint8_t)((v >> (i * 4)) & 0xF);
+        com1_putc(n < 10 ? '0' + n : 'a' + n - 10);
+    }
+}
+static void com1_putdec(int v) {
+    char buf[16]; int i = 0;
+    if (v < 0) { com1_putc('-'); v = -v; }
+    if (v == 0) { com1_putc('0'); return; }
+    while (v > 0) { buf[i++] = '0' + (v % 10); v /= 10; }
+    while (i > 0) com1_putc(buf[--i]);
+}
+
 static virtio_net_t g_virtio = {0};
 
 #define VQPOOL_SIZE (128 * 1024)
@@ -161,11 +191,13 @@ static void virtio_wait_for(uint16_t base, uint8_t reg, uint32_t mask, uint32_t 
 #define VIRTIO_MODERN_CONFIG_BASE   0x100
 
 void virtio_init(void) {
-    /* Find VirtIO network device. We try the modern ID first (0x1041)
-       and fall back to the transitional legacy ID (0x1000). */
-    const pci_device_t* dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_PCI_ID_NET);
+    /* Find VirtIO network device.
+       We try the transitional/legacy device ID (0x1000) first, since
+       that's what QEMU's default `virtio-net-pci` advertises. We fall
+       back to the modern (non-transitional) ID 0x1041. */
+    const pci_device_t* dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_LEGACY_ID_NET);
     if (!dev) {
-        dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_LEGACY_ID_NET);
+        dev = pci_find_device(VIRTIO_VENDOR_ID, VIRTIO_PCI_ID_NET);
     }
     if (!dev) {
         dev = pci_find_class(0x02, 0x00);
@@ -174,9 +206,13 @@ void virtio_init(void) {
 
     if (!dev) {
         terminal_writestring("[virtio] No virtio-net device found.\n");
+        com1_puts("[virtio] No virtio-net device found.\r\n");
         return;
     }
 
+    com1_puts("[virtio] Found virtio-net device, dev_id=0x");
+    com1_puthex(dev->device_id);
+    com1_puts("\r\n");
     terminal_writestring("[virtio] Found virtio-net device.\n");
 
     pci_enable_device(dev);
@@ -185,18 +221,31 @@ void virtio_init(void) {
        bit 0 = 1   => I/O space (legacy)
        bit 0 = 0   => MMIO       (modern) */
     uint32_t bar0 = pci_get_bar(dev, 0);
+    com1_puts("[virtio] BAR0 = 0x");
+    com1_puthex(bar0);
+    com1_puts("\r\n");
     if (bar0 & 0x01) {
         g_is_modern = 0;
         g_virtio.iobase = (uint16_t)(bar0 & ~0x03u);
+        com1_puts("[virtio] Using legacy I/O port 0x");
+        com1_puthex(g_virtio.iobase);
+        com1_puts("\r\n");
     } else {
         g_is_modern = 1;
         g_mmio_base_phys = bar0 & ~0x0Fu;
         g_mmio_base = (volatile uint8_t*)(uintptr_t)g_mmio_base_phys;
         g_virtio.iobase = (uint16_t)g_mmio_base_phys;
+        com1_puts("[virtio] Using modern MMIO at phys 0x");
+        com1_puthex(g_mmio_base_phys);
+        com1_puts("\r\n");
 
         uint32_t magic = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_MAGIC);
+        com1_puts("[virtio] MMIO magic = 0x");
+        com1_puthex(magic);
+        com1_puts("\r\n");
         if (magic != 0x74726976u) {
             terminal_writestring("[virtio] MMIO magic mismatch.\n");
+            com1_puts("[virtio] MMIO magic mismatch.\r\n");
             return;
         }
         uint32_t ver = *(volatile uint32_t*)mmio_ptr(VIRTIO_MODERN_VERSION);
@@ -207,14 +256,31 @@ void virtio_init(void) {
 
     g_virtio.present = 0;
 
-    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, 0);
-    virtio_wait_for(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, 0xFF, 0);
+    /* Reset the device. According to the virtio spec, writing 0 to
+       the status register triggers a reset. We need to keep writing 0
+       until the device confirms the reset by reporting status == 0. */
+    {
+        int tries;
+        for (tries = 0; tries < 10; tries++) {
+            virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, 0);
+            /* Small delay for the device to process the reset. */
+            volatile int d; for (d = 0; d < 10000; d++) { }
+            uint8_t s = virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS);
+            com1_puts("[virtio] Reset attempt "); com1_putdec(tries);
+            com1_puts(", status=0x"); com1_puthex(s);
+            com1_puts("\r\n");
+            if (s == 0) break;
+        }
+    }
 
-    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
-                  virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_ACK);
+    virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
 
     virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
                   virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER);
+
+    com1_puts("[virtio] Driver loaded, status=0x");
+    com1_puthex(virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS));
+    com1_puts("\r\n");
 
     /* Read device features.
        Legacy: GUEST_FEATURES register holds features directly.
@@ -243,12 +309,17 @@ void virtio_init(void) {
                   virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_FEATURES_OK);
 
     uint8_t status = virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS);
+    com1_puts("[virtio] After FEATURES_OK, status=0x");
+    com1_puthex(status);
+    com1_puts("\r\n");
     if (status & VIRTIO_STATUS_NEEDS_RESET) {
         terminal_writestring("[virtio] Device requires reset.\n");
+        com1_puts("[virtio] Device requires reset.\r\n");
         return;
     }
     if (!(status & VIRTIO_STATUS_FEATURES_OK)) {
         terminal_writestring("[virtio] Feature negotiation failed.\n");
+        com1_puts("[virtio] Feature negotiation failed.\r\n");
         return;
     }
 
@@ -386,6 +457,10 @@ void virtio_init(void) {
 
     virtio_write8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS,
         virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS) | VIRTIO_STATUS_DRIVER_OK);
+
+    com1_puts("[virtio] DRIVER_OK set, status=0x");
+    com1_puthex(virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_STATUS));
+    com1_puts("\r\n");
 
     terminal_writestring("       VirtIO-net initialized successfully.\n");
     g_virtio.present = 1;
