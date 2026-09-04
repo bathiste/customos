@@ -440,60 +440,82 @@ static void cmd_ping(int argc, char** argv) {
     dst_ip[0] = (uint8_t)a; dst_ip[1] = (uint8_t)b;
     dst_ip[2] = (uint8_t)c; dst_ip[3] = (uint8_t)d;
     uint8_t src_ip[4] = {10, 0, 2, 15};
+
+    /* Resolve destination IP via ARP (and gateway if off-subnet).
+       We send a request and poll the receive ring for the reply. */
+    virtio_arp_resolve(dst_ip);
+    {
+        int wait;
+        for (wait = 0; wait < 100000; wait++) virtio_net_poll();
+    }
+
     terminal_setcolor(0x0E);
     terminal_writestring("PING "); terminal_writestring(argv[1]);
     terminal_writestring(" with 64 bytes of data:\n");
     terminal_setcolor(0x07);
+
     static uint16_t ping_id = 0x1234;
     static uint16_t ping_seq = 1;
-    int i;
-    for (i = 0; i < 4; i++) {
-        uint8_t packet[98];
-        packet[0] = 0x52; packet[1] = 0x54; packet[2] = 0x00;
-        packet[3] = 0x12; packet[4] = 0x34; packet[5] = 0x56;
-        uint8_t my_mac[6];
-        virtio_get_mac(my_mac);
-        int mi;
-        for (mi = 0; mi < 6; mi++) packet[6 + mi] = my_mac[mi];
-        packet[12] = 0x08; packet[13] = 0x00;
-        packet[14] = 0x45; packet[15] = 0x00;
-        packet[16] = 0x00; packet[17] = 0x5C;
-        packet[18] = 0x00; packet[19] = 0x00;
-        packet[20] = 0x00; packet[21] = 0x00;
-        packet[22] = 0x40; packet[23] = 0x01;
-        packet[24] = 0x00; packet[25] = 0x00;
-        for (mi = 0; mi < 4; mi++) packet[26 + mi] = src_ip[mi];
-        for (mi = 0; mi < 4; mi++) packet[30 + mi] = dst_ip[mi];
+
+    /* Build the ICMP/IP packet (payload only, starts at Ethernet offset 14).
+       The EtherType is implied by the IP header that follows. */
+    uint8_t payload[64];
+    payload[0] = 0x45; payload[1] = 0x00;          /* version/IHL, DSCP */
+    payload[2] = 0x00; payload[3] = 0x54;          /* total length 84 */
+    payload[4] = 0x00; payload[5] = 0x00;          /* identification */
+    payload[6] = 0x00; payload[7] = 0x00;          /* flags/fragment */
+    payload[8] = 0x40; payload[9] = 0x01;          /* TTL=64, proto=ICMP */
+    payload[10] = 0x00; payload[11] = 0x00;        /* checksum (fill below) */
+    int pi;
+    for (pi = 0; pi < 4; pi++) payload[12 + pi] = src_ip[pi];
+    for (pi = 0; pi < 4; pi++) payload[16 + pi] = dst_ip[pi];
+    {
         uint32_t sum = 0;
         int si;
         for (si = 0; si < 20; si += 2)
-            sum += ((uint32_t)packet[14 + si] << 8) | packet[15 + si];
+            sum += ((uint32_t)payload[si] << 8) | payload[si + 1];
         while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
         sum = ~sum;
-        packet[24] = (uint8_t)(sum >> 8);
-        packet[25] = (uint8_t)(sum & 0xFF);
-        packet[34] = 0x08; packet[35] = 0x00;
-        packet[36] = 0x00; packet[37] = 0x00;
-        packet[38] = (uint8_t)(ping_id >> 8);
-        packet[39] = (uint8_t)(ping_id & 0xFF);
-        packet[40] = (uint8_t)(ping_seq >> 8);
-        packet[41] = (uint8_t)(ping_seq & 0xFF);
-        for (si = 42; si < 92; si++) packet[si] = (uint8_t)(si - 42);
-        sum = 0;
-        for (si = 34; si < 92; si += 2)
-            sum += ((uint32_t)packet[si] << 8) | packet[si + 1];
+        payload[10] = (uint8_t)(sum >> 8);
+        payload[11] = (uint8_t)(sum & 0xFF);
+    }
+    payload[20] = 0x08; payload[21] = 0x00;        /* ICMP echo request */
+    payload[22] = 0x00; payload[23] = 0x00;        /* checksum (fill below) */
+    payload[24] = (uint8_t)(ping_id >> 8);
+    payload[25] = (uint8_t)(ping_id & 0xFF);
+    payload[26] = (uint8_t)(ping_seq >> 8);
+    payload[27] = (uint8_t)(ping_seq & 0xFF);
+    int si;
+    for (si = 28; si < 64; si++) payload[si] = (uint8_t)(si - 28);
+    {
+        uint32_t sum = 0;
+        for (si = 20; si < 64; si += 2)
+            sum += ((uint32_t)payload[si] << 8) | payload[si + 1];
         while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
         sum = ~sum;
-        packet[36] = (uint8_t)(sum >> 8);
-        packet[37] = (uint8_t)(sum & 0xFF);
-        int result = virtio_net_send(packet, 92);
+        payload[22] = (uint8_t)(sum >> 8);
+        payload[23] = (uint8_t)(sum & 0xFF);
+    }
+
+    int i;
+    for (i = 0; i < 4; i++) {
         terminal_writestring("  seq=");
         terminal_write_decimal(ping_seq);
-        if (result == 0) terminal_writestring(" sent.\n");
-        else { terminal_setcolor(0x04); terminal_writestring(" failed.\n"); terminal_setcolor(0x07); }
+        terminal_writestring("... ");
+        int result = virtio_send_to_ip(dst_ip, payload, 50);
+        if (result == 0) {
+            terminal_writestring("sent");
+        } else {
+            terminal_setcolor(0x04);
+            terminal_writestring("TX fail");
+            terminal_setcolor(0x07);
+        }
+        terminal_putchar('\n');
+
         ping_seq++;
+        /* Poll long enough to allow ARP cache fill and a single reply */
         int j;
-        for (j = 0; j < 30000; j++) virtio_net_poll();
+        for (j = 0; j < 50000; j++) virtio_net_poll();
     }
     terminal_setcolor(0x0A);
     terminal_writestring("\n4 packets sent.\n");

@@ -132,6 +132,14 @@ int  virtio_net_recv(uint8_t* buffer, uint32_t max_len);
 /* Poll for received packets (call this in the main loop). */
 void virtio_net_poll(void);
 
+/* Send an Ethernet frame to a given IP. Builds dst MAC from ARP cache
+   (or broadcasts the frame if no entry exists). The payload starts at
+   offset 14 of the Ethernet frame and should already include the EtherType. */
+int  virtio_send_to_ip(const uint8_t* dst_ip, const uint8_t* payload, uint32_t plen);
+
+/* Kick off ARP resolution for an IP (no-op if already cached). */
+void virtio_arp_resolve(const uint8_t* ip);
+
 /* Get the negotiated feature bits. */
 uint32_t virtio_get_features(void);
 

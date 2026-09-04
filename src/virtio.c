@@ -46,7 +46,8 @@ static virtio_avail_t* g_tx_avail;
 static virtio_used_t*  g_tx_used;
 
 static uint16_t g_rx_avail_idx = 0;
-static uint16_t g_last_tx_used_idx = 0;
+static uint16_t g_tx_avail_idx = 0;
+static uint16_t g_last_rx_idx = 0;
 
 static uint16_t find_iobase(const pci_device_t* dev) {
     uint32_t bar = pci_get_bar(dev, 0);
@@ -274,9 +275,9 @@ int virtio_net_send(const uint8_t* data, uint32_t len) {
     g_tx_desc[slot].flags = VIRTIO_DESC_F_WRITE;
     g_tx_desc[slot].next  = 0;
 
-    g_tx_avail->ring[g_tx_avail->idx % VIRTIO_QUEUE_SIZE] = (uint16_t)slot;
-    g_tx_avail->idx++;
-    __asm__ volatile ("" : : "r"(&g_tx_avail->idx) : "memory");
+    g_tx_avail->ring[g_tx_avail_idx % VIRTIO_QUEUE_SIZE] = (uint16_t)slot;
+    g_tx_avail_idx++;
+    g_tx_avail->idx = g_tx_avail_idx;
     virtio_write16(g_virtio.iobase, VIRTIO_REG_QUEUE_NOTIFY, 1);
     return 0;
 }
@@ -312,20 +313,156 @@ static void build_icmp_reply(const uint8_t* req, uint8_t* resp, uint32_t req_len
     resp[36] = (uint8_t)(sum >> 8); resp[37] = (uint8_t)(sum & 0xFF);
 }
 
-static uint16_t g_last_rx_idx = 0;
+/* -------------------------------------------------------------------------
+ * Minimal ARP cache.
+ * One slot per entry. For our tiny network this is plenty.
+ * --------------------------------------------------------------------- */
+#define ARP_CACHE_SIZE 8
+typedef struct {
+    uint8_t  ip[4];
+    uint8_t  mac[6];
+    uint8_t  valid;
+} arp_entry_t;
+static arp_entry_t g_arp[ARP_CACHE_SIZE];
+
+static const uint8_t ETH_BROADCAST[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+
+static const uint8_t* arp_lookup(const uint8_t* ip) {
+    int i;
+    for (i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (!g_arp[i].valid) continue;
+        if (g_arp[i].ip[0]==ip[0] && g_arp[i].ip[1]==ip[1] &&
+            g_arp[i].ip[2]==ip[2] && g_arp[i].ip[3]==ip[3]) {
+            return g_arp[i].mac;
+        }
+    }
+    return (const uint8_t*)0;
+}
+
+static void arp_insert(const uint8_t* ip, const uint8_t* mac) {
+    int i, free = -1;
+    for (i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (g_arp[i].valid &&
+            g_arp[i].ip[0]==ip[0] && g_arp[i].ip[1]==ip[1] &&
+            g_arp[i].ip[2]==ip[2] && g_arp[i].ip[3]==ip[3]) {
+            int k; for (k=0;k<6;k++) g_arp[i].mac[k]=mac[k];
+            return;
+        }
+        if (!g_arp[i].valid && free < 0) free = i;
+    }
+    if (free < 0) free = 0;   /* overwrite oldest */
+    for (i = 0; i < 4; i++) g_arp[free].ip[i]  = ip[i];
+    for (i = 0; i < 6; i++) g_arp[free].mac[i] = mac[i];
+    g_arp[free].valid = 1;
+}
+
+/* Build and transmit an ARP request for `target_ip` from `src_ip`. */
+static void arp_request(const uint8_t* src_ip, const uint8_t* target_ip) {
+    uint8_t pkt[42];
+    int i;
+    for (i = 0; i < 6; i++) pkt[i]     = ETH_BROADCAST[i];
+    for (i = 0; i < 6; i++) pkt[6 + i] = g_virtio.mac[i];
+    pkt[12] = 0x08; pkt[13] = 0x06;            /* EtherType: ARP */
+    pkt[14] = 0x00; pkt[15] = 0x01;            /* HTYPE: Ethernet */
+    pkt[16] = 0x08; pkt[17] = 0x00;            /* PTYPE: IPv4    */
+    pkt[18] = 6;     pkt[19] = 4;              /* HLEN, PLEN    */
+    pkt[20] = 0x00; pkt[21] = 0x01;            /* OPER: request */
+    for (i = 0; i < 6; i++) pkt[22 + i] = g_virtio.mac[i];
+    for (i = 0; i < 4; i++) pkt[28 + i] = src_ip[i];
+    for (i = 0; i < 6; i++) pkt[32 + i] = 0;   /* THA: unknown */
+    for (i = 0; i < 4; i++) pkt[38 + i] = target_ip[i];
+    virtio_net_send(pkt, sizeof(pkt));
+}
+
+void virtio_arp_resolve(const uint8_t* ip) {
+    if (arp_lookup(ip)) return;
+    static const uint8_t our_ip[4] = {10, 0, 2, 15};
+    arp_request(our_ip, ip);
+}
+
+/* Resolve IP to MAC, or broadcast if not in cache. */
+static const uint8_t* resolve_dest_mac(const uint8_t* ip) {
+    const uint8_t* m = arp_lookup(ip);
+    return m ? m : ETH_BROADCAST;
+}
+
+/* Send an Ethernet frame to a given IP. Builds dst MAC from ARP cache
+   (or broadcasts the frame if no entry exists). The caller fills the
+   payload starting at offset 14 (already including EtherType). */
+int virtio_send_to_ip(const uint8_t* dst_ip, const uint8_t* payload, uint32_t plen) {
+    if (plen + 14 > NET_BUF_SIZE) return -1;
+    static uint8_t frame[NET_BUF_SIZE];
+    const uint8_t* mac = resolve_dest_mac(dst_ip);
+    int i;
+    for (i = 0; i < 6; i++) frame[i] = mac[i];
+    for (i = 0; i < 6; i++) frame[6 + i] = g_virtio.mac[i];
+    for (i = 0; i < (int)plen; i++) frame[14 + i] = payload[i];
+    return virtio_net_send(frame, plen + 14);
+}
 
 void virtio_net_poll(void) {
     if (!g_virtio.present) return;
+
+    /* Reclaim TX buffers: any used-ring entry for the TX queue means
+       the host has finished sending that packet, so its slot is free again. */
+    static uint16_t last_tx_used = 0;
+    while (last_tx_used != g_tx_used->idx) {
+        uint16_t slot = g_tx_used->ring[last_tx_used % VIRTIO_QUEUE_SIZE].id;
+        if (slot < TX_BUF_COUNT) g_tx_buf_free[slot] = 1;
+        last_tx_used++;
+    }
+
+    /* Drain incoming packets, auto-respond to ARP and ICMP echo requests. */
     while (g_last_rx_idx != g_rx_used->idx) {
         uint16_t slot = g_rx_used->ring[g_last_rx_idx % VIRTIO_QUEUE_SIZE].id;
         uint32_t len  = g_rx_used->ring[g_last_rx_idx % VIRTIO_QUEUE_SIZE].len;
         if (slot < RX_BUF_COUNT && len >= 14) {
             uint8_t* buf = g_rx_bufs[slot];
             uint16_t etype = (buf[12] << 8) | buf[13];
-            if (etype == 0x0800 && len >= 34 && buf[23] == 1 && buf[34] == 8) {
-                uint8_t reply[64];
-                build_icmp_reply(buf, reply, len);
-                virtio_net_send(reply, (len < 64) ? len : 64);
+
+            /* ARP */
+            if (etype == 0x0806 && len >= 42) {
+                uint16_t oper = (buf[20] << 8) | buf[21];
+                uint8_t  sha[6], sip[4], tip[4];
+                int k;
+                for (k = 0; k < 6; k++) sha[k] = buf[22 + k];
+                for (k = 0; k < 4; k++) sip[k] = buf[28 + k];
+                for (k = 0; k < 4; k++) tip[k] = buf[38 + k];
+                /* Learn sender regardless of request/reply */
+                arp_insert(sip, sha);
+
+                /* Reply to a request that targets our MAC */
+                static const uint8_t our_ip[4] = {10, 0, 2, 15};
+                int is_for_us = 1;
+                for (k = 0; k < 4; k++) if (tip[k] != our_ip[k]) is_for_us = 0;
+                if (oper == 1 && is_for_us) {
+                    /* Build ARP reply */
+                    uint8_t reply[42];
+                    for (k = 0; k < 6; k++) reply[k]      = sha[k];
+                    for (k = 0; k < 6; k++) reply[6 + k]  = g_virtio.mac[k];
+                    reply[12] = 0x08; reply[13] = 0x06;
+                    reply[14] = 0x00; reply[15] = 0x01;
+                    reply[16] = 0x08; reply[17] = 0x00;
+                    reply[18] = 6;     reply[19] = 4;
+                    reply[20] = 0x00; reply[21] = 0x02;       /* reply */
+                    for (k = 0; k < 6; k++) reply[22 + k] = g_virtio.mac[k];
+                    for (k = 0; k < 4; k++) reply[28 + k] = our_ip[k];
+                    for (k = 0; k < 6; k++) reply[32 + k] = sha[k];
+                    for (k = 0; k < 4; k++) reply[38 + k] = sip[k];
+                    virtio_net_send(reply, sizeof(reply));
+                }
+            }
+            /* ICMP echo request -> reply */
+            else if (etype == 0x0800 && len >= 34 && buf[23] == 1 && buf[34] == 8) {
+                uint8_t reply[96];
+                build_icmp_reply(buf, reply, (len < 96) ? len : 96);
+                /* Use the source MAC from the request to reply */
+                uint8_t dst_mac[6];
+                int k;
+                for (k = 0; k < 6; k++) dst_mac[k] = buf[6 + k];
+                for (k = 0; k < 6; k++) reply[k] = dst_mac[k];
+                for (k = 0; k < 6; k++) reply[6 + k] = g_virtio.mac[k];
+                virtio_net_send(reply, (len < 96) ? len : 96);
             }
         }
         if (slot < RX_BUF_COUNT) {
@@ -335,6 +472,7 @@ void virtio_net_poll(void) {
             g_rx_desc[slot].next  = 0;
             g_rx_avail->ring[g_rx_avail_idx % VIRTIO_QUEUE_SIZE] = slot;
             g_rx_avail_idx++;
+            g_rx_avail->idx = g_rx_avail_idx;
         }
         g_last_rx_idx++;
     }
