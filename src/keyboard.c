@@ -8,6 +8,7 @@
 #define KEYBOARD_STATUS_PORT  0x64
 #define KEYBOARD_COMMAND_PORT 0x64
 #define KEYBOARD_OUT_BUFFER   0x01
+#define KEYBOARD_AUX_BUFFER   0x20  /* Bit 5: 1 = mouse data, 0 = keyboard data */
 
 /* Scan code set 2 - ESC=0x76, Backspace=0x0E */
 static const uint8_t scancode_to_ascii[128] = {
