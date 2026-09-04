@@ -76,7 +76,7 @@ run-debug: iso
 	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -d int,cpu_reset -D debug.log
 
 run: iso
-	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -serial file:/tmp/qemu_serial.log -no-quit -display sdl
+	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -serial file:/tmp/qemu_serial.log -display sdl
 
 run-disk: iso disk.img
 	qemu-system-i386 -cdrom customos.iso -boot d -hda disk.img -m 64 -vga std
