@@ -30,7 +30,9 @@ void mouse_poll(void);
 /* Handle a byte received from the PS/2 controller (already known to be mouse data) */
 void mouse_handle_byte(uint8_t byte);
 
-/* Read and clear the click event (returns 1 if a click happened since last call) */
-int mouse_consume_click(void);
+/* Returns 1 if a click occurred since the last call, and writes the position
+ * where the click started. Returns 0 if no click occurred.
+ * Click = left button pressed and then released. */
+int mouse_consume_click(int* out_x, int* out_y);
 
 #endif

@@ -60,6 +60,8 @@ static int8_t mouse_dy[3];
 /* Click event tracking - to detect rapid press/release */
 static int click_event = 0;     /* 1 = a click (press+release) has been detected */
 static int prev_left_state = 0; /* tracked across packet boundaries */
+static int click_x = 0;         /* position where the click started */
+static int click_y = 0;
 
 /* Enable auxiliary mouse device */
 void mouse_init(void) {
@@ -94,29 +96,46 @@ int mouse_get_buttons(void) { return mouse_buttons; }
 
 /* Handle a mouse byte (caller has already determined it came from the mouse) */
 void mouse_handle_byte(uint8_t byte) {
-    /* First byte must have bit 3 set (sync) */
-    if (mouse_cycle == 0 && !(byte & 0x08)) return;
+    /* If we see a byte with bit 3 set, it's the start of a new packet.
+     * This handles re-synchronization if we ever get out of sync. */
+    if (byte & 0x08) {
+        /* Start of a new packet - reset cycle */
+        mouse_cycle = 0;
+        mouse_dx[0] = (int8_t)byte;
+        mouse_cycle = 1;
+        return;
+    }
+    
+    /* Otherwise, this is a data byte - only process if we're past the first byte */
+    if (mouse_cycle == 0) {
+        /* We got a non-sync byte without a packet start - ignore and resync */
+        return;
+    }
     
     /* Store byte */
-    if (mouse_cycle == 0) {
-        mouse_dx[0] = (int8_t)byte;
-    } else if (mouse_cycle == 1) {
+    if (mouse_cycle == 1) {
         mouse_dx[1] = (int8_t)byte;
-    } else {
+    } else if (mouse_cycle == 2) {
         mouse_dx[2] = (int8_t)byte;
     }
     mouse_cycle++;
     
     if (mouse_cycle >= 3) {
-        mouse_cycle = 0;
+        /* Complete packet received - process it */
         
         /* Extract buttons */
         int new_buttons = mouse_dx[0] & 0x07;
         int new_left = (new_buttons & 0x01) ? 1 : 0;
         
+        /* Detect press transition: capture the position when left was pressed */
+        if (new_left == 1 && prev_left_state == 0) {
+            /* Just pressed - record current position */
+            click_x = mouse_x;
+            click_y = mouse_y;
+        }
+        
         /* Detect click event: left button was pressed in a previous packet
-         * and is now released. This captures rapid clicks that may happen
-         * between successive polls. */
+         * and is now released. The click position was recorded when pressed. */
         if (prev_left_state == 1 && new_left == 0) {
             click_event = 1;
         }
@@ -136,13 +155,20 @@ void mouse_handle_byte(uint8_t byte) {
         if (mouse_x > 79) mouse_x = 79;
         if (mouse_y < 0) mouse_y = 0;
         if (mouse_y > 24) mouse_y = 24;
+        
+        /* Reset cycle - next byte should be a new packet start */
+        mouse_cycle = 0;
     }
 }
 
-int mouse_consume_click(void) {
-    int was_click = click_event;
+int mouse_consume_click(int* out_x, int* out_y) {
+    if (!click_event) {
+        return 0;
+    }
     click_event = 0;
-    return was_click;
+    if (out_x) *out_x = click_x;
+    if (out_y) *out_y = click_y;
+    return 1;
 }
 
 /* Call this regularly to keep mouse state updated */

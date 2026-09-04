@@ -162,8 +162,8 @@ void gui_demo(void) {
     };
     int pressed_btn = -1;
     int last_clicked = -1;
-    int prev_left = 0;
-    int press_btn_idx = -1;  /* which button was being pressed */
+    int click_x = -1, click_y = -1;
+    int click_happened = 0;
     int hovered_btn = -1;    /* which button the mouse is currently over */
     uint8_t bg_color = COLOR_BLACK;
     
@@ -176,7 +176,14 @@ void gui_demo(void) {
         int mx = mouse_get_x();
         int my = mouse_get_y();
         int btns = mouse_get_buttons();
-        int click_happened = mouse_consume_click();
+        
+        /* Consume any click event from the mouse driver (with position) */
+        int tmp_x, tmp_y;
+        if (mouse_consume_click(&tmp_x, &tmp_y)) {
+            click_happened = 1;
+            click_x = tmp_x;
+            click_y = tmp_y;
+        }
         
         /* Determine which button (if any) the mouse is currently over */
         hovered_btn = -1;
@@ -192,37 +199,33 @@ void gui_demo(void) {
             }
         }
         
-        /* Detect left button transitions */
+        /* Track which button is currently being pressed (for visual feedback) */
         int left_now = (btns & 0x01) ? 1 : 0;
-        int left_pressed = left_now && !prev_left;  /* just pressed */
-        int left_released = !left_now && prev_left; /* just released */
-        
-        /* When left button is just pressed, record which button (if any) */
-        if (left_pressed) {
-            press_btn_idx = hovered_btn;
+        if (left_now) {
+            pressed_btn = hovered_btn;
+        } else {
+            pressed_btn = -1;
         }
         
-        /* Highlight the button while it is being held down */
-        pressed_btn = -1;
-        if (left_now && press_btn_idx >= 0) {
-            pressed_btn = press_btn_idx;
+        /* Process a click event: was it on a button? */
+        if (click_happened) {
+            /* Find which button (if any) the click was on */
+            int clicked_btn = -1;
+            int i;
+            for (i = 0; i < NUM_BUTTONS; i++) {
+                int bx = btn_x_start + i * (btn_w + btn_spacing);
+                if (click_x >= bx && click_x < bx + btn_w &&
+                    click_y >= btn_y && click_y < btn_y + btn_h) {
+                    clicked_btn = i;
+                    break;
+                }
+            }
+            if (clicked_btn >= 0) {
+                last_clicked = clicked_btn;
+                bg_color = btn_colors[clicked_btn];
+            }
+            click_happened = 0;
         }
-        
-        /* When left button is RELEASED, trigger click if it was a button */
-        if (left_released && press_btn_idx >= 0) {
-            /* Click the button that was originally pressed */
-            last_clicked = press_btn_idx;
-            bg_color = btn_colors[press_btn_idx];
-            press_btn_idx = -1;
-        }
-        
-        /* Catch-all: if mouse driver reported a click event we missed
-         * (fast press/release between frames), use the hovered button */
-        if (click_happened && hovered_btn >= 0) {
-            last_clicked = hovered_btn;
-            bg_color = btn_colors[hovered_btn];
-        }
-        prev_left = left_now;
         
         gui_clear(bg_color);
         
