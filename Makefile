@@ -14,7 +14,7 @@ SRC = src
 BUILD = build
 KERNEL = $(BUILD)/kernel.bin
 
-OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o
+OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o
 
 all: $(KERNEL)
 
@@ -54,7 +54,10 @@ $(BUILD)/keyboard.o: $(SRC)/keyboard.c $(SRC)/keyboard.h $(SRC)/io.h | $(BUILD)
 $(BUILD)/string.o: $(SRC)/string.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/gui.o: $(SRC)/gui.c $(SRC)/gui.h $(SRC)/io.h $(SRC)/keyboard.h $(SRC)/string.h | $(BUILD)
+$(BUILD)/gui.o: $(SRC)/gui.c $(SRC)/gui.h $(SRC)/io.h $(SRC)/keyboard.h $(SRC)/string.h $(SRC)/mouse.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/mouse.o: $(SRC)/mouse.c $(SRC)/mouse.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(KERNEL): $(OBJS) | $(BUILD)
@@ -73,7 +76,7 @@ run-debug: iso
 	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -d int,cpu_reset -D debug.log
 
 run: iso
-	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std
+	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -serial file:/tmp/qemu_serial.log -no-quit -display sdl
 
 run-disk: iso disk.img
 	qemu-system-i386 -cdrom customos.iso -boot d -hda disk.img -m 64 -vga std

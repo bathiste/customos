@@ -1,5 +1,6 @@
 #include "io.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "fs.h"
 
 extern void shell_run(void);
@@ -7,6 +8,7 @@ extern void shell_run(void);
 void main(void) {
     terminal_init();
     keyboard_init();
+    mouse_init();
     fs_init();
     
     terminal_setcolor(VGA_COLOR_LIGHT_CYAN);

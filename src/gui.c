@@ -1,6 +1,7 @@
 #include "gui.h"
 #include "io.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "string.h"
 
 /* Simple framebuffer-based GUI for VGA text mode 80x25 */
@@ -144,8 +145,18 @@ void gui_demo(void) {
     int anim_x = 10, anim_y = 5;
     int dx = 1, dy = 1;
     int x;
+    int last_mouse_x = -1, last_mouse_y = -1;
+    
     while (1) {
+        /* Poll mouse for updates */
+        mouse_poll();
+        int mx = mouse_get_x();
+        int my = mouse_get_y();
+        int btns = mouse_get_buttons();
+        
         gui_clear(COLOR_BLACK);
+        
+        /* Title bar */
         draw_rect_filled(0, 0, 80, 1, COLOR_BLUE);
         framebuffer[35] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'C';
         framebuffer[36] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'u';
@@ -153,10 +164,14 @@ void gui_demo(void) {
         framebuffer[38] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 't';
         framebuffer[39] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'O';
         framebuffer[40] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'S';
+        
+        /* Decorative shapes */
         draw_rect(5, 5, 15, 8, COLOR_LIGHT_GREEN);
         draw_rect_filled(25, 5, 12, 6, COLOR_RED);
         draw_circle(50, 8, 4, COLOR_YELLOW);
         draw_circle_filled(65, 8, 3, COLOR_LIGHT_CYAN);
+        
+        /* Lines and triangle */
         draw_line(5, 15, 75, 15, COLOR_LIGHT_MAGENTA);
         draw_line(40, 14, 40, 22, COLOR_LIGHT_GREY);
         draw_line(5, 20, 30, 14, COLOR_BROWN);
@@ -168,19 +183,82 @@ void gui_demo(void) {
         draw_line(60, 14, 60, 22, COLOR_YELLOW);
         draw_line(56, 16, 64, 20, COLOR_YELLOW);
         draw_line(64, 16, 56, 20, COLOR_YELLOW);
+        
+        /* Auto-bouncing ball */
         draw_circle_filled(anim_x, anim_y, 2, COLOR_WHITE);
         anim_x += dx;
         anim_y += dy;
         if (anim_x <= 2 || anim_x >= 77) dx = -dx;
         if (anim_y <= 2 || anim_y >= 23) dy = -dy;
+        
+        /* Mouse ball - tracks mouse position */
+        /* Draw mouse ball with a colored outline based on button state */
+        uint8_t mouse_color = COLOR_WHITE;
+        if (btns & 0x01) mouse_color = COLOR_RED;  /* Left click */
+        if (btns & 0x02) mouse_color = COLOR_BLUE; /* Right click */
+        if ((btns & 0x03) == 0x03) mouse_color = COLOR_LIGHT_MAGENTA;
+        
+        /* Draw a 3x3 ball with crosshair pattern */
+        draw_circle_filled(mx, my, 1, mouse_color);
+        /* Outline */
+        draw_circle(mx, my, 2, COLOR_LIGHT_GREY);
+        /* Center dot */
+        draw_pixel(mx, my, COLOR_BLACK);
+        
+        /* Mouse position display */
+        const char* pos_msg = "Mouse:";
+        for (x = 0; pos_msg[x]; x++) {
+            int py = 23;
+            framebuffer[py * 80 + x] = 
+                ((uint16_t)COLOR_DARK_GREY << 8) | pos_msg[x];
+        }
+        /* Draw coordinates */
+        char num_buf[8];
+        int n = 0;
+        int v = mx;
+        if (v == 0) num_buf[n++] = '0';
+        else {
+            char tmp[8];
+            int t = 0;
+            while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
+            while (t > 0) num_buf[n++] = tmp[--t];
+        }
+        num_buf[n] = '\0';
+        for (x = 0; num_buf[x]; x++) {
+            int py = 23;
+            framebuffer[py * 80 + 7 + x] = 
+                ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
+        }
+        framebuffer[23 * 80 + 7 + n] = 
+            ((uint16_t)COLOR_DARK_GREY << 8) | ',';
+        n++;
+        v = my;
+        if (v == 0) num_buf[n++] = '0';
+        else {
+            char tmp[8];
+            int t = 0;
+            while (v > 0) { tmp[t++] = '0' + (v % 10); v /= 10; }
+            while (t > 0) num_buf[n++] = tmp[--t];
+        }
+        num_buf[n] = '\0';
+        int start_y = 7 + 1;
+        for (x = 0; num_buf[x]; x++) {
+            framebuffer[23 * 80 + start_y + x] = 
+                ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
+        }
+        
+        /* Status bar */
         draw_rect_filled(0, 24, 80, 1, COLOR_DARK_GREY);
-        const char* msg = "CustomOS GUI v0.1 - BACKSPACE to exit";
+        const char* msg = "GUI v0.1 - BACKSPACE:exit";
         for (x = 0; msg[x] && (x + 2) < 80; x++) {
             framebuffer[(24 * 80) + x + 2] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | (uint16_t)(uint8_t)msg[x];
         }
+        
         gui_update();
         gui_delay(80);
+        
+        /* Check keyboard for exit */
         if (keyboard_has_input()) {
             int c = (unsigned char)keyboard_getchar();
             if (c == '\b') {
