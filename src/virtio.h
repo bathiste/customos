@@ -26,14 +26,25 @@
 #define VIRTIO_STATUS_NEEDS_RESET 0x40
 #define VIRTIO_STATUS_FAILED      0x80
 
-/* VirtIO common configuration registers (offset from base) */
-#define VIRTIO_REG_DEVICE_STATUS    0x00
-#define VIRTIO_REG_GUEST_FEATURES  0x04
-#define VIRTIO_REG_QUEUE_PFN       0x08
-#define VIRTIO_REG_QUEUE_NUM       0x0C
-#define VIRTIO_REG_QUEUE_SEL       0x0E
-#define VIRTIO_REG_QUEUE_NOTIFY    0x10
-#define VIRTIO_REG_DEVICE_CONFIG   0x14
+/* VirtIO modern (1.0) configuration registers (offset from MMIO base) */
+#define VIRTIO_REG_DEVICE_STATUS    0x00   /* also used as legacy alias */
+#define VIRTIO_REG_GUEST_FEATURES   0x04
+#define VIRTIO_REG_QUEUE_PFN        0x08
+#define VIRTIO_REG_QUEUE_NUM        0x0C
+#define VIRTIO_REG_QUEUE_SEL        0x0E
+#define VIRTIO_REG_QUEUE_NOTIFY     0x10
+#define VIRTIO_REG_DEVICE_CONFIG    0x14
+
+/* VirtIO legacy (transitional) register offsets (I/O port). */
+#define VIRTIO_LEGACY_DEVICE_FEATURES  0x00
+#define VIRTIO_LEGACY_GUEST_FEATURES   0x04
+#define VIRTIO_LEGACY_QUEUE_PFN        0x08
+#define VIRTIO_LEGACY_QUEUE_NUM        0x0C
+#define VIRTIO_LEGACY_QUEUE_SEL        0x0E
+#define VIRTIO_LEGACY_QUEUE_NOTIFY     0x10
+#define VIRTIO_LEGACY_DEVICE_STATUS    0x12
+#define VIRTIO_LEGACY_ISR_STATUS       0x13
+#define VIRTIO_LEGACY_DEVICE_CONFIG    0x14
 
 /* VirtIO feature bits (common) */
 #define VIRTIO_F_RING_INDIRECT_DESC  28
@@ -142,5 +153,11 @@ void virtio_arp_resolve(const uint8_t* ip);
 
 /* Get the negotiated feature bits. */
 uint32_t virtio_get_features(void);
+
+/* COM1 serial helpers (used by kernel.c for debug output) */
+void com1_putc(char c);
+void com1_puts(const char* s);
+void com1_puthex(uint32_t v);
+void com1_putdec(int v);
 
 #endif /* VIRTIO_H */

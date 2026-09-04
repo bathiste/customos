@@ -22,7 +22,7 @@ static inline void outw(uint16_t port, uint16_t val) {
 /* Boot diagnostics: write a copy of all virtio debug output to COM1
    (0x3F8) so it appears in QEMU's -serial output and survives any
    screen clear. This is invaluable when debugging driver init. */
-static void com1_putc(char c) {
+void com1_putc(char c) {
     /* Wait for the UART to be ready (bit 5 of line status = THR empty) */
     int wait;
     for (wait = 0; wait < 10000; wait++) {
@@ -30,10 +30,10 @@ static void com1_putc(char c) {
     }
     outb(0x3F8, (uint8_t)c);
 }
-static void com1_puts(const char* s) {
+void com1_puts(const char* s) {
     while (*s) com1_putc(*s++);
 }
-static void com1_puthex(uint32_t v) {
+void com1_puthex(uint32_t v) {
     int i;
     com1_puts("0x");
     for (i = 7; i >= 0; i--) {
@@ -41,7 +41,7 @@ static void com1_puthex(uint32_t v) {
         com1_putc(n < 10 ? '0' + n : 'a' + n - 10);
     }
 }
-static void com1_putdec(int v) {
+void com1_putdec(int v) {
     char buf[16]; int i = 0;
     if (v < 0) { com1_putc('-'); v = -v; }
     if (v == 0) { com1_putc('0'); return; }
@@ -95,66 +95,93 @@ static uint32_t g_mmio_base_phys = 0;
 static volatile uint8_t* g_mmio_base = (volatile uint8_t*)0;
 static int  g_is_modern = 0;
 
+/* Translate a "logical" register offset to the actual offset for the
+   current access mode. Legacy I/O mode has a different status register
+   offset (0x12) than modern MMIO mode (0x00), and several other small
+   differences. */
+static inline uint8_t vreg(uint8_t logical) {
+    if (g_is_modern) {
+        return logical;
+    }
+    /* Legacy I/O port offsets */
+    switch (logical) {
+        case VIRTIO_REG_DEVICE_STATUS: return VIRTIO_LEGACY_DEVICE_STATUS;
+        case VIRTIO_REG_GUEST_FEATURES: return VIRTIO_LEGACY_GUEST_FEATURES;
+        case VIRTIO_REG_QUEUE_PFN:    return VIRTIO_LEGACY_QUEUE_PFN;
+        case VIRTIO_REG_QUEUE_NUM:    return VIRTIO_LEGACY_QUEUE_NUM;
+        case VIRTIO_REG_QUEUE_SEL:    return VIRTIO_LEGACY_QUEUE_SEL;
+        case VIRTIO_REG_QUEUE_NOTIFY: return VIRTIO_LEGACY_QUEUE_NOTIFY;
+        case VIRTIO_REG_DEVICE_CONFIG: return VIRTIO_LEGACY_DEVICE_CONFIG;
+        default: return logical;
+    }
+}
+
 static inline volatile uint8_t* mmio_ptr(uint32_t reg) {
     return g_mmio_base + reg;
 }
 
 static void virtio_write8(uint16_t base, uint8_t reg, uint8_t val) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
         /* Modern virtio has no 8-bit register access; we must RMW a 32-bit slot. */
-        uint32_t off = reg & ~3;
-        uint32_t shift = (reg & 3) * 8;
-        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t a = off & ~3;
+        uint32_t shift = (off & 3) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(a);
         uint32_t v = *p;
         v = (v & ~(0xFFu << shift)) | ((uint32_t)val << shift);
         *p = v;
     } else {
-        outb(base + reg, val);
+        outb(base + off, val);
     }
 }
 static uint8_t virtio_read8(uint16_t base, uint8_t reg) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
-        uint32_t off = reg & ~3;
-        uint32_t shift = (reg & 3) * 8;
-        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t a = off & ~3;
+        uint32_t shift = (off & 3) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(a);
         return (uint8_t)((*p >> shift) & 0xFF);
     }
-    return inb(base + reg);
+    return inb(base + off);
 }
 static void virtio_write16(uint16_t base, uint8_t reg, uint16_t val) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
-        uint32_t off = reg & ~2;
-        uint32_t shift = (reg & 2) * 8;
-        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t a = off & ~2;
+        uint32_t shift = (off & 2) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(a);
         uint32_t v = *p;
         v = (v & ~(0xFFFFu << shift)) | ((uint32_t)val << shift);
         *p = v;
     } else {
-        outw(base + reg, val);
+        outw(base + off, val);
     }
 }
 static uint16_t virtio_read16(uint16_t base, uint8_t reg) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
-        uint32_t off = reg & ~2;
-        uint32_t shift = (reg & 2) * 8;
-        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(off);
+        uint32_t a = off & ~2;
+        uint32_t shift = (off & 2) * 8;
+        volatile uint32_t* p = (volatile uint32_t*)mmio_ptr(a);
         return (uint16_t)((*p >> shift) & 0xFFFF);
     }
-    return inw(base + reg);
+    return inw(base + off);
 }
 static void virtio_write32(uint16_t base, uint8_t reg, uint32_t val) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
-        *(volatile uint32_t*)mmio_ptr(reg) = val;
+        *(volatile uint32_t*)mmio_ptr(off) = val;
     } else {
-        __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"((uint16_t)(base + reg)));
+        __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"((uint16_t)(base + off)));
     }
 }
 static uint32_t virtio_read32(uint16_t base, uint8_t reg) {
+    uint8_t off = vreg(reg);
     if (g_is_modern) {
-        return *(volatile uint32_t*)mmio_ptr(reg);
+        return *(volatile uint32_t*)mmio_ptr(off);
     }
     uint32_t val;
-    __asm__ volatile ("inl %1, %0" : "=a"(val) : "Nd"((uint16_t)(base + reg)));
+    __asm__ volatile ("inl %1, %0" : "=a"(val) : "Nd"((uint16_t)(base + off)));
     return val;
 }
 
@@ -340,6 +367,14 @@ void virtio_init(void) {
             g_virtio.mac[i] = virtio_read8(g_virtio.iobase, VIRTIO_REG_DEVICE_CONFIG + i);
         }
     }
+    com1_puts("[virtio] MAC = ");
+    for (i = 0; i < 6; i++) {
+        uint8_t b = g_virtio.mac[i];
+        com1_puthex(b >> 4);
+        com1_puthex(b & 0xf);
+        if (i < 5) com1_putc(':');
+    }
+    com1_puts("\r\n");
     terminal_writestring("       MAC: ");
     for (i = 0; i < 6; i++) {
         char hex[3];
@@ -363,8 +398,14 @@ void virtio_init(void) {
     } else {
         qsize = virtio_read16(g_virtio.iobase, VIRTIO_REG_QUEUE_NUM);
     }
+    com1_puts("[virtio] RX queue size = ");
+    com1_putdec(qsize);
+    com1_puts("\r\n");
     terminal_writestring("       RX queue size: "); print_int(qsize); terminal_putchar('\n');
-    if (qsize == 0 || qsize > VIRTIO_QUEUE_SIZE) return;
+    if (qsize == 0 || qsize > VIRTIO_QUEUE_SIZE) {
+        com1_puts("[virtio] Invalid RX queue size, aborting\r\n");
+        return;
+    }
 
     g_rx_desc  = (virtio_desc_t*)((uint8_t*)g_vqpool + g_vqpool_used);
     g_rx_avail = (virtio_avail_t*)((uint8_t*)g_rx_desc + VIRTIO_QUEUE_SIZE * sizeof(virtio_desc_t));
@@ -463,6 +504,7 @@ void virtio_init(void) {
     com1_puts("\r\n");
 
     terminal_writestring("       VirtIO-net initialized successfully.\n");
+    com1_puts("[virtio] INIT COMPLETE, present=1\r\n");
     g_virtio.present = 1;
 }
 
