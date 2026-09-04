@@ -88,23 +88,18 @@ int mouse_get_x(void) { return mouse_x; }
 int mouse_get_y(void) { return mouse_y; }
 int mouse_get_buttons(void) { return mouse_buttons; }
 
-/* Call this regularly to keep mouse state updated */
-void mouse_poll(void) {
-    /* Check if mouse data is available */
-    if ((inb(PS2_STATUS) & PS2_OUT_BUF) == 0) return;
-    
-    uint8_t status = inb(PS2_DATA);
-    
+/* Handle a mouse byte (caller has already determined it came from the mouse) */
+void mouse_handle_byte(uint8_t byte) {
     /* First byte must have bit 3 set (sync) */
-    if (mouse_cycle == 0 && !(status & 0x08)) return;
+    if (mouse_cycle == 0 && !(byte & 0x08)) return;
     
     /* Store byte */
     if (mouse_cycle == 0) {
-        mouse_dx[0] = (int8_t)status;
+        mouse_dx[0] = (int8_t)byte;
     } else if (mouse_cycle == 1) {
-        mouse_dx[1] = (int8_t)status;
+        mouse_dx[1] = (int8_t)byte;
     } else {
-        mouse_dx[2] = (int8_t)status;
+        mouse_dx[2] = (int8_t)byte;
     }
     mouse_cycle++;
     
@@ -127,4 +122,20 @@ void mouse_poll(void) {
         if (mouse_y < 0) mouse_y = 0;
         if (mouse_y > 24) mouse_y = 24;
     }
+}
+
+/* Call this regularly to keep mouse state updated */
+void mouse_poll(void) {
+    /* Check if mouse data is available */
+    uint8_t status = inb(PS2_STATUS);
+    if ((status & PS2_OUT_BUF) == 0) return;
+    
+    /* Only read if it's mouse data (auxiliary buffer bit set) */
+    if (!(status & 0x20)) {
+        /* It's keyboard data, not mouse - don't read it */
+        return;
+    }
+    
+    uint8_t byte = inb(PS2_DATA);
+    mouse_handle_byte(byte);
 }

@@ -27,4 +27,7 @@ int mouse_get_buttons(void);
 /* Poll for mouse events - call regularly to keep position updated */
 void mouse_poll(void);
 
+/* Handle a byte received from the PS/2 controller (already known to be mouse data) */
+void mouse_handle_byte(uint8_t byte);
+
 #endif

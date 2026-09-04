@@ -108,16 +108,33 @@ void keyboard_init(void) {
 }
 
 int keyboard_has_input(void) {
-    if ((inb(KEYBOARD_STATUS_PORT) & KEYBOARD_OUT_BUFFER)) {
-        keyboard_handler(inb(KEYBOARD_DATA_PORT));
+    /* Drain any pending PS/2 data and route to keyboard or mouse */
+    uint8_t status = inb(KEYBOARD_STATUS_PORT);
+    if (status & KEYBOARD_OUT_BUFFER) {
+        if (status & KEYBOARD_AUX_BUFFER) {
+            /* Mouse data - forward to mouse handler */
+            uint8_t data = inb(KEYBOARD_DATA_PORT);
+            extern void mouse_handle_byte(uint8_t byte);
+            mouse_handle_byte(data);
+        } else {
+            keyboard_handler(inb(KEYBOARD_DATA_PORT));
+        }
     }
     return !buffer_empty();
 }
 
 char keyboard_getchar(void) {
     while (buffer_empty()) {
-        if ((inb(KEYBOARD_STATUS_PORT) & KEYBOARD_OUT_BUFFER)) {
-            keyboard_handler(inb(KEYBOARD_DATA_PORT));
+        uint8_t status = inb(KEYBOARD_STATUS_PORT);
+        if (status & KEYBOARD_OUT_BUFFER) {
+            if (status & KEYBOARD_AUX_BUFFER) {
+                /* Mouse data - forward to mouse handler */
+                uint8_t data = inb(KEYBOARD_DATA_PORT);
+                extern void mouse_handle_byte(uint8_t byte);
+                mouse_handle_byte(data);
+            } else {
+                keyboard_handler(inb(KEYBOARD_DATA_PORT));
+            }
         }
     }
     return buffer_get();
