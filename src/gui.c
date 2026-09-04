@@ -147,6 +147,25 @@ void gui_demo(void) {
     int x;
     int last_mouse_x = -1, last_mouse_y = -1;
     
+    /* Button layout: 6 buttons in a row */
+    #define NUM_BUTTONS 6
+    int btn_w = 12;
+    int btn_h = 3;
+    int btn_y = 19;
+    int btn_x_start = 2;
+    int btn_spacing = 1;
+    uint8_t btn_colors[NUM_BUTTONS] = {
+        COLOR_RED, COLOR_GREEN, COLOR_BLUE,
+        COLOR_YELLOW, COLOR_CYAN, COLOR_LIGHT_MAGENTA
+    };
+    const char* btn_labels[NUM_BUTTONS] = {
+        "RED", "GREEN", "BLUE", "YELLOW", "CYAN", "MAGENTA"
+    };
+    int pressed_btn = -1;
+    int last_clicked = -1;
+    int prev_left = 0;
+    uint8_t bg_color = COLOR_BLACK;
+    
     while (1) {
         /* Poll mouse for updates */
         mouse_poll();
@@ -154,7 +173,36 @@ void gui_demo(void) {
         int my = mouse_get_y();
         int btns = mouse_get_buttons();
         
-        gui_clear(COLOR_BLACK);
+        /* Check if left button is pressed and on a button */
+        pressed_btn = -1;
+        if (btns & 0x01) {
+            int i;
+            for (i = 0; i < NUM_BUTTONS; i++) {
+                int bx = btn_x_start + i * (btn_w + btn_spacing);
+                if (mx >= bx && mx < bx + btn_w &&
+                    my >= btn_y && my < btn_y + btn_h) {
+                    pressed_btn = i;
+                    break;
+                }
+            }
+        }
+        
+        /* When left button is RELEASED, if it was on a button, "click" it */
+        if ((prev_left & 0x01) && !(btns & 0x01)) {
+            int i;
+            for (i = 0; i < NUM_BUTTONS; i++) {
+                int bx = btn_x_start + i * (btn_w + btn_spacing);
+                if (mx >= bx && mx < bx + btn_w &&
+                    my >= btn_y && my < btn_y + btn_h) {
+                    last_clicked = i;
+                    bg_color = btn_colors[i];
+                    break;
+                }
+            }
+        }
+        prev_left = btns;
+        
+        gui_clear(bg_color);
         
         /* Title bar */
         draw_rect_filled(0, 0, 80, 1, COLOR_BLUE);
@@ -173,23 +221,62 @@ void gui_demo(void) {
         
         /* Lines and triangle */
         draw_line(5, 15, 75, 15, COLOR_LIGHT_MAGENTA);
-        draw_line(40, 14, 40, 22, COLOR_LIGHT_GREY);
-        draw_line(5, 20, 30, 14, COLOR_BROWN);
-        draw_line(50, 20, 75, 14, COLOR_CYAN);
-        draw_line(30, 22, 38, 17, COLOR_LIGHT_RED);
-        draw_line(38, 17, 46, 22, COLOR_LIGHT_RED);
-        draw_line(30, 22, 46, 22, COLOR_LIGHT_RED);
-        draw_line(55, 18, 65, 18, COLOR_YELLOW);
-        draw_line(60, 14, 60, 22, COLOR_YELLOW);
-        draw_line(56, 16, 64, 20, COLOR_YELLOW);
-        draw_line(64, 16, 56, 20, COLOR_YELLOW);
+        draw_line(40, 14, 40, 18, COLOR_LIGHT_GREY);
+        draw_line(5, 17, 30, 11, COLOR_BROWN);
+        draw_line(50, 17, 75, 11, COLOR_CYAN);
+        draw_line(30, 18, 38, 13, COLOR_LIGHT_RED);
+        draw_line(38, 13, 46, 18, COLOR_LIGHT_RED);
+        draw_line(30, 18, 46, 18, COLOR_LIGHT_RED);
+        draw_line(55, 14, 65, 14, COLOR_YELLOW);
+        draw_line(60, 10, 60, 18, COLOR_YELLOW);
+        draw_line(56, 12, 64, 16, COLOR_YELLOW);
+        draw_line(64, 12, 56, 16, COLOR_YELLOW);
         
         /* Auto-bouncing ball */
         draw_circle_filled(anim_x, anim_y, 2, COLOR_WHITE);
         anim_x += dx;
         anim_y += dy;
         if (anim_x <= 2 || anim_x >= 77) dx = -dx;
-        if (anim_y <= 2 || anim_y >= 23) dy = -dy;
+        if (anim_y <= 2 || anim_y >= 18) dy = -dy;
+        
+        /* Draw the buttons */
+        {
+            int i;
+            for (i = 0; i < NUM_BUTTONS; i++) {
+                int bx = btn_x_start + i * (btn_w + btn_spacing);
+                int by = btn_y;
+                uint8_t fill_color = btn_colors[i];
+                
+                /* If button is being pressed, darken it (inset effect) */
+                if (i == pressed_btn) {
+                    draw_rect_filled(bx, by, btn_w, btn_h, COLOR_DARK_GREY);
+                    draw_rect_filled(bx + 1, by, btn_w - 2, btn_h, fill_color);
+                } else {
+                    draw_rect_filled(bx, by, btn_w, btn_h, fill_color);
+                }
+                
+                /* Button border (3D effect) */
+                draw_horizontal_line(bx, by, btn_w, COLOR_WHITE);
+                draw_vertical_line(bx, by, btn_h, COLOR_WHITE);
+                draw_horizontal_line(bx, by + btn_h - 1, btn_w, COLOR_BLACK);
+                draw_vertical_line(bx + btn_w - 1, by, btn_h, COLOR_BLACK);
+                
+                /* Button label - centered */
+                const char* lbl = btn_labels[i];
+                int lbl_len = 0;
+                while (lbl[lbl_len]) lbl_len++;
+                int text_col = bx + (btn_w - lbl_len) / 2;
+                int text_row = by + btn_h / 2;
+                /* Choose text color: black on bright, white on dark */
+                uint8_t text_color = COLOR_BLACK;
+                if (i == 2 || i == 5) text_color = COLOR_WHITE;
+                int k;
+                for (k = 0; lbl[k] && (text_col + k) < 80; k++) {
+                    framebuffer[text_row * 80 + text_col + k] = 
+                        ((uint16_t)text_color << 8) | lbl[k];
+                }
+            }
+        }
         
         /* Mouse ball - tracks mouse position */
         /* Draw mouse ball with a colored outline based on button state */
@@ -257,16 +344,29 @@ void gui_demo(void) {
                 ((uint16_t)COLOR_DARK_GREY << 8) | num_buf[x];
         }
         
-        /* Range info: (0..79, 0..24) */
-        const char* range_msg = "  (0..79, 0..24)";
-        for (x = 0; range_msg[x] && col < 80; x++) {
-            framebuffer[23 * 80 + col++] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | range_msg[x];
+        /* Show which button was clicked last */
+        if (last_clicked >= 0) {
+            const char* clicked_msg = "  BG: ";
+            for (x = 0; clicked_msg[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | clicked_msg[x];
+            }
+            const char* cname = btn_labels[last_clicked];
+            for (x = 0; cname[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | cname[x];
+            }
+        } else {
+            const char* hint_msg = "  Click a button!";
+            for (x = 0; hint_msg[x] && col < 80; x++) {
+                framebuffer[23 * 80 + col++] = 
+                    ((uint16_t)COLOR_DARK_GREY << 8) | hint_msg[x];
+            }
         }
         
         /* Status bar */
         draw_rect_filled(0, 24, 80, 1, COLOR_DARK_GREY);
-        const char* msg = "GUI v0.1 - BACKSPACE:exit";
+        const char* msg = "Click buttons to change BG - BACKSPACE:exit";
         for (x = 0; msg[x] && (x + 2) < 80; x++) {
             framebuffer[(24 * 80) + x + 2] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | (uint16_t)(uint8_t)msg[x];
