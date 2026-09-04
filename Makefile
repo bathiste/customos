@@ -1,4 +1,4 @@
-.PHONY: all clean run iso disk
+.PHONY: all clean run run-net run-debug iso disk
 
 CC = gcc
 AS = nasm
@@ -14,7 +14,7 @@ SRC = src
 BUILD = build
 KERNEL = $(BUILD)/kernel.bin
 
-OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o
+OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o $(BUILD)/pci.o $(BUILD)/virtio.o
 
 all: $(KERNEL)
 
@@ -45,7 +45,7 @@ $(BUILD)/io.o: $(SRC)/io.c $(SRC)/io.h | $(BUILD)
 $(BUILD)/fs.o: $(SRC)/fs.c $(SRC)/fs.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/shell.o: $(SRC)/shell.c $(SRC)/io.h $(SRC)/keyboard.h $(SRC)/fs.h | $(BUILD)
+$(BUILD)/shell.o: $(SRC)/shell.c $(SRC)/io.h $(SRC)/keyboard.h $(SRC)/fs.h $(SRC)/packages.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/keyboard.o: $(SRC)/keyboard.c $(SRC)/keyboard.h $(SRC)/io.h | $(BUILD)
@@ -58,6 +58,12 @@ $(BUILD)/gui.o: $(SRC)/gui.c $(SRC)/gui.h $(SRC)/io.h $(SRC)/keyboard.h $(SRC)/s
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/mouse.o: $(SRC)/mouse.c $(SRC)/mouse.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/pci.o: $(SRC)/pci.c $(SRC)/pci.h $(SRC)/io.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/virtio.o: $(SRC)/virtio.c $(SRC)/virtio.h $(SRC)/pci.h $(SRC)/io.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(KERNEL): $(OBJS) | $(BUILD)
@@ -76,10 +82,10 @@ run-debug: iso
 	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -d int,cpu_reset -D debug.log
 
 run: iso
-	qemu-system-i386 -cdrom customos.iso -boot d -m 64 -vga std -serial file:/tmp/qemu_serial.log -display sdl
+	qemu-system-i386 -cdrom customos.iso -boot d -m 128 -vga std -serial file:/tmp/qemu_serial.log -display sdl -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 
-run-disk: iso disk.img
-	qemu-system-i386 -cdrom customos.iso -boot d -hda disk.img -m 64 -vga std
+run-net: iso
+	qemu-system-i386 -cdrom customos.iso -boot d -m 128 -vga std -netdev user,id=net0 -device virtio-net-pci,netdev=net0 -serial file:/tmp/qemu_serial.log -display sdl
 
 clean:
 	$(RM) -r $(BUILD) $(ISO) customos.iso disk.img

@@ -4,6 +4,7 @@
 #include "gui.h"
 #include "string.h"
 #include "packages.h"
+#include "virtio.h"
 #include <stdbool.h>
 
 #define MAX_LINE 256
@@ -38,6 +39,8 @@ static void cmd_help(void) {
     terminal_writestring("  start-gui  Launch the graphical interface\n");
     terminal_writestring("  editkey   Test key inputs (ESC to exit)\n");
     terminal_writestring("  pkg       Package compatibility database\n");
+    terminal_writestring("  net       Show network status\n");
+    terminal_writestring("  ping <ip>  Send ICMP ping\n");
 }
 
 static void read_line(char* buf, int max) {
@@ -370,6 +373,133 @@ static void cmd_pkg(int argc, char** argv) {
 }
 
 
+
+static void cmd_net(int argc, char** argv) {
+    (void)argc; (void)argv;
+    terminal_setcolor(0x0E);
+    terminal_writestring("Network Status\n");
+    terminal_writestring("==============\n");
+    terminal_setcolor(0x07);
+    if (virtio_net_present()) {
+        terminal_setcolor(0x0A);
+        terminal_writestring("  Status:     UP\n  Device:     virtio-net\n");
+        terminal_setcolor(0x07);
+        uint8_t mac[6];
+        virtio_get_mac(mac);
+        terminal_writestring("  MAC:        ");
+        int mi;
+        for (mi = 0; mi < 6; mi++) {
+            char hx[3];
+            uint8_t b = mac[mi];
+            hx[0] = "0123456789ABCDEF"[b >> 4];
+            hx[1] = "0123456789ABCDEF"[b & 0x0F];
+            hx[2] = '\0';
+            terminal_writestring(hx);
+            if (mi < 5) terminal_putchar(':');
+        }
+        terminal_putchar('\n');
+        terminal_writestring("  IP:         10.0.2.15\n  Gateway:    10.0.2.2\n");
+    } else {
+        terminal_setcolor(0x04);
+        terminal_writestring("  Status:     DOWN\n");
+        terminal_setcolor(0x07);
+    }
+}
+
+static void terminal_write_decimal(int n) {
+    char buf[16];
+    int i = 0;
+    if (n == 0) { terminal_putchar('0'); return; }
+    while (n > 0) { buf[i++] = '0' + (n % 10); n /= 10; }
+    while (i > 0) terminal_putchar(buf[--i]);
+}
+
+static void cmd_ping(int argc, char** argv) {
+    if (argc < 2) { terminal_writestring("Usage: ping <ipaddr>\n"); return; }
+    if (!virtio_net_present()) {
+        terminal_setcolor(0x04);
+        terminal_writestring("ping: network not available\n");
+        terminal_setcolor(0x07);
+        return;
+    }
+    const char* ipstr = argv[1];
+    int a = 0, b = 0, c = 0, d = 0;
+    const char* pp = ipstr;
+    int part = 0;
+    while (*pp && part < 4) {
+        if (*pp == '.') { part++; pp++; continue; }
+        if (*pp >= '0' && *pp <= '9') {
+            if (part == 0) a = a * 10 + (*pp - '0');
+            else if (part == 1) b = b * 10 + (*pp - '0');
+            else if (part == 2) c = c * 10 + (*pp - '0');
+            else d = d * 10 + (*pp - '0');
+        }
+        pp++;
+    }
+    uint8_t dst_ip[4];
+    dst_ip[0] = (uint8_t)a; dst_ip[1] = (uint8_t)b;
+    dst_ip[2] = (uint8_t)c; dst_ip[3] = (uint8_t)d;
+    uint8_t src_ip[4] = {10, 0, 2, 15};
+    terminal_setcolor(0x0E);
+    terminal_writestring("PING "); terminal_writestring(argv[1]);
+    terminal_writestring(" with 64 bytes of data:\n");
+    terminal_setcolor(0x07);
+    static uint16_t ping_id = 0x1234;
+    static uint16_t ping_seq = 1;
+    int i;
+    for (i = 0; i < 4; i++) {
+        uint8_t packet[98];
+        packet[0] = 0x52; packet[1] = 0x54; packet[2] = 0x00;
+        packet[3] = 0x12; packet[4] = 0x34; packet[5] = 0x56;
+        uint8_t my_mac[6];
+        virtio_get_mac(my_mac);
+        int mi;
+        for (mi = 0; mi < 6; mi++) packet[6 + mi] = my_mac[mi];
+        packet[12] = 0x08; packet[13] = 0x00;
+        packet[14] = 0x45; packet[15] = 0x00;
+        packet[16] = 0x00; packet[17] = 0x5C;
+        packet[18] = 0x00; packet[19] = 0x00;
+        packet[20] = 0x00; packet[21] = 0x00;
+        packet[22] = 0x40; packet[23] = 0x01;
+        packet[24] = 0x00; packet[25] = 0x00;
+        for (mi = 0; mi < 4; mi++) packet[26 + mi] = src_ip[mi];
+        for (mi = 0; mi < 4; mi++) packet[30 + mi] = dst_ip[mi];
+        uint32_t sum = 0;
+        int si;
+        for (si = 0; si < 20; si += 2)
+            sum += ((uint32_t)packet[14 + si] << 8) | packet[15 + si];
+        while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+        sum = ~sum;
+        packet[24] = (uint8_t)(sum >> 8);
+        packet[25] = (uint8_t)(sum & 0xFF);
+        packet[34] = 0x08; packet[35] = 0x00;
+        packet[36] = 0x00; packet[37] = 0x00;
+        packet[38] = (uint8_t)(ping_id >> 8);
+        packet[39] = (uint8_t)(ping_id & 0xFF);
+        packet[40] = (uint8_t)(ping_seq >> 8);
+        packet[41] = (uint8_t)(ping_seq & 0xFF);
+        for (si = 42; si < 92; si++) packet[si] = (uint8_t)(si - 42);
+        sum = 0;
+        for (si = 34; si < 92; si += 2)
+            sum += ((uint32_t)packet[si] << 8) | packet[si + 1];
+        while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+        sum = ~sum;
+        packet[36] = (uint8_t)(sum >> 8);
+        packet[37] = (uint8_t)(sum & 0xFF);
+        int result = virtio_net_send(packet, 92);
+        terminal_writestring("  seq=");
+        terminal_write_decimal(ping_seq);
+        if (result == 0) terminal_writestring(" sent.\n");
+        else { terminal_setcolor(0x04); terminal_writestring(" failed.\n"); terminal_setcolor(0x07); }
+        ping_seq++;
+        int j;
+        for (j = 0; j < 30000; j++) virtio_net_poll();
+    }
+    terminal_setcolor(0x0A);
+    terminal_writestring("\n4 packets sent.\n");
+    terminal_setcolor(0x07);
+}
+
 static int parse_line(char* line, char** argv, int max_argc) {
     int argc = 0;
     char* p = line;
@@ -392,6 +522,8 @@ void shell_run(void) {
     terminal_writestring("Type 'help' for commands.\n\n");
     
     while (1) {
+        virtio_net_poll();
+
         print_prompt();
         read_line(line, sizeof(line));
         argc = parse_line(line, argv, 8);
@@ -409,6 +541,8 @@ void shell_run(void) {
         else if (!strcmp(argv[0], "start-gui")) { gui_init(); gui_demo(); }
         else if (!strcmp(argv[0], "editkey")) { cmd_edit_keys(); }
         else if (!strcmp(argv[0], "pkg")) { cmd_pkg(argc, argv); }
+        else if (!strcmp(argv[0], "net")) { cmd_net(argc, argv); }
+        else if (!strcmp(argv[0], "ping")) { cmd_ping(argc, argv); }
         else if (!strcmp(argv[0], "exit")) { terminal_writestring("Goodbye!\n"); return; }
         else { terminal_writestring("unknown: "); terminal_writestring(argv[0]); terminal_putchar('\n'); }
     }

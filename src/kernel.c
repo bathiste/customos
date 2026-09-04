@@ -2,6 +2,8 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "fs.h"
+#include "pci.h"
+#include "virtio.h"
 
 extern void shell_run(void);
 
@@ -10,13 +12,17 @@ void main(void) {
     keyboard_init();
     mouse_init();
     fs_init();
-    
+
     terminal_setcolor(VGA_COLOR_LIGHT_CYAN);
     terminal_writestring("CustomOS 0.1 loaded successfully!\n");
     terminal_setcolor(VGA_COLOR_LIGHT_GREY);
-    
+
+    /* Initialize network stack */
+    pci_init();
+    virtio_init();
+
     shell_run();
-    
+
     for (;;) {
         __asm__ volatile ("cli; hlt");
     }
