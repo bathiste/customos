@@ -520,23 +520,40 @@ uint32_t virtio_get_features(void) { return g_virtio.features; }
 int virtio_net_send(const uint8_t* data, uint32_t len) {
     if (!g_virtio.present || len == 0 || len > NET_BUF_SIZE - 64) return -1;
 
-    int slot = -1;
+    /* Need 2 consecutive TX slots: slot 0 = virtio_net_hdr (10 bytes),
+       slot 1 = ethernet frame data. We use NEXT to chain them. */
+    int s0 = -1, s1 = -1;
     int si;
-    for (si = 0; si < TX_BUF_COUNT; si++) {
-        if (g_tx_buf_free[si]) { slot = si; g_tx_buf_free[si] = 0; break; }
+    for (si = 0; si < TX_BUF_COUNT - 1; si++) {
+        if (g_tx_buf_free[si] && g_tx_buf_free[si + 1]) {
+            s0 = si; s1 = si + 1;
+            g_tx_buf_free[s0] = 0; g_tx_buf_free[s1] = 0;
+            break;
+        }
     }
-    if (slot < 0) return -1;
+    if (s0 < 0) return -1;
 
-    volatile uint8_t* dst = g_tx_bufs[slot];
+    /* Slot 0: virtio_net_hdr (10 bytes, all zero - no checksum offload) */
+    volatile uint8_t* dst0 = g_tx_bufs[s0];
+    int k;
+    for (k = 0; k < 10; k++) dst0[k] = 0;
+
+    g_tx_desc[s0].addr  = g_tx_bufs_phys[s0];
+    g_tx_desc[s0].len   = 10;          /* sizeof(virtio_net_hdr) */
+    g_tx_desc[s0].flags = VIRTIO_DESC_F_NEXT;  /* chain to slot 1 */
+    g_tx_desc[s0].next  = (uint16_t)s1;
+
+    /* Slot 1: ethernet frame data (device-readable, guest->host) */
+    volatile uint8_t* dst1 = g_tx_bufs[s1];
     uint32_t ci;
-    for (ci = 0; ci < len; ci++) dst[ci] = data[ci];
+    for (ci = 0; ci < len; ci++) dst1[ci] = data[ci];
 
-    g_tx_desc[slot].addr  = g_tx_bufs_phys[slot];
-    g_tx_desc[slot].len   = len;
-    g_tx_desc[slot].flags = VIRTIO_DESC_F_WRITE;
-    g_tx_desc[slot].next  = 0;
+    g_tx_desc[s1].addr  = g_tx_bufs_phys[s1];
+    g_tx_desc[s1].len   = len;
+    g_tx_desc[s1].flags = 0;            /* device-readable (out) */
+    g_tx_desc[s1].next  = 0;
 
-    g_tx_avail->ring[g_tx_avail_idx % VIRTIO_QUEUE_SIZE] = (uint16_t)slot;
+    g_tx_avail->ring[g_tx_avail_idx % VIRTIO_QUEUE_SIZE] = (uint16_t)s0;
     g_tx_avail_idx++;
     g_tx_avail->idx = g_tx_avail_idx;
     if (g_is_modern) {
@@ -668,35 +685,71 @@ int virtio_send_to_ip(const uint8_t* dst_ip, const uint8_t* payload, uint32_t pl
 void virtio_net_poll(void) {
     if (!g_virtio.present) return;
 
+    /* Check ISR status - tells us what kind of interrupt occurred.
+       Bit 0: queue interrupt (RX/TX descriptor used)
+       Bit 1: config change interrupt */
+    if (!g_is_modern) {
+        uint8_t isr = inb(g_virtio.iobase + VIRTIO_LEGACY_ISR_STATUS);
+        if (isr != 0) {
+            com1_puts("[poll] ISR=0x"); com1_puthex(isr);
+            com1_puts(" rx_used="); com1_putdec(g_rx_used->idx);
+            com1_puts(" last_rx="); com1_putdec(g_last_rx_idx);
+            com1_puts("\r\n");
+        }
+    }
+
     /* Reclaim TX buffers: any used-ring entry for the TX queue means
-       the host has finished sending that packet, so its slot is free again. */
+       the host has finished sending that packet, so its slot is free again.
+       TX uses a 2-slot chain (header + data), so free both. */
     static uint16_t last_tx_used = 0;
     while (last_tx_used != g_tx_used->idx) {
         uint16_t slot = g_tx_used->ring[last_tx_used % VIRTIO_QUEUE_SIZE].id;
-        if (slot < TX_BUF_COUNT) g_tx_buf_free[slot] = 1;
+        if (slot < TX_BUF_COUNT) {
+            g_tx_buf_free[slot] = 1;
+            if (slot + 1 < TX_BUF_COUNT) g_tx_buf_free[slot + 1] = 1;
+        }
         last_tx_used++;
     }
 
     /* Drain incoming packets, auto-respond to ARP and ICMP echo requests. */
+    /* RX buffer layout: [virtio_net_hdr (10 bytes)][ethernet frame]
+       The ethernet frame starts at offset RX_HDR_SIZE. */
+    #define RX_HDR_SIZE 10
     while (g_last_rx_idx != g_rx_used->idx) {
         uint16_t slot = g_rx_used->ring[g_last_rx_idx % VIRTIO_QUEUE_SIZE].id;
         uint32_t len  = g_rx_used->ring[g_last_rx_idx % VIRTIO_QUEUE_SIZE].len;
-        if (slot < RX_BUF_COUNT && len >= 14) {
+        com1_puts("[rx] used event: slot="); com1_putdec(slot);
+        com1_puts(" len="); com1_putdec(len);
+        com1_puts(" g_last_rx_idx="); com1_putdec(g_last_rx_idx);
+        com1_puts(" used_idx="); com1_putdec(g_rx_used->idx);
+        com1_puts("\r\n");
+        if (slot < RX_BUF_COUNT && len >= RX_HDR_SIZE + 14) {
             uint8_t* buf = g_rx_bufs[slot];
-            uint16_t etype = (buf[12] << 8) | buf[13];
+            uint8_t* eth = buf + RX_HDR_SIZE;  /* ethernet frame starts here */
+            uint16_t etype = (eth[12] << 8) | eth[13];
+            com1_puts("[rx] slot="); com1_putdec(slot);
+            com1_puts(" len="); com1_putdec(len);
+            com1_puts(" etype=0x"); com1_puthex(etype);
+            com1_puts("\r\n");
 
             /* ARP */
-            if (etype == 0x0806 && len >= 42) {
-                uint16_t oper = (buf[20] << 8) | buf[21];
+            if (etype == 0x0806 && len >= RX_HDR_SIZE + 42) {
+                uint16_t oper = (eth[20] << 8) | eth[21];
                 uint8_t  sha[6], sip[4], tip[4];
                 int k;
-                for (k = 0; k < 6; k++) sha[k] = buf[22 + k];
-                for (k = 0; k < 4; k++) sip[k] = buf[28 + k];
-                for (k = 0; k < 4; k++) tip[k] = buf[38 + k];
+                for (k = 0; k < 6; k++) sha[k] = eth[22 + k];
+                for (k = 0; k < 4; k++) sip[k] = eth[28 + k];
+                for (k = 0; k < 4; k++) tip[k] = eth[38 + k];
                 /* Learn sender regardless of request/reply */
                 arp_insert(sip, sha);
+                com1_puts("[rx] ARP oper="); com1_putdec(oper);
+                com1_puts(" from="); com1_putdec(sip[0]);
+                com1_putc('.'); com1_putdec(sip[1]);
+                com1_putc('.'); com1_putdec(sip[2]);
+                com1_putc('.'); com1_putdec(sip[3]);
+                com1_puts("\r\n");
 
-                /* Reply to a request that targets our MAC */
+                /* Reply to a request that targets our IP */
                 static const uint8_t our_ip[4] = {10, 0, 2, 15};
                 int is_for_us = 1;
                 for (k = 0; k < 4; k++) if (tip[k] != our_ip[k]) is_for_us = 0;
@@ -715,19 +768,22 @@ void virtio_net_poll(void) {
                     for (k = 0; k < 6; k++) reply[32 + k] = sha[k];
                     for (k = 0; k < 4; k++) reply[38 + k] = sip[k];
                     virtio_net_send(reply, sizeof(reply));
+                    com1_puts("[rx] Sent ARP reply\r\n");
                 }
             }
             /* ICMP echo request -> reply */
-            else if (etype == 0x0800 && len >= 34 && buf[23] == 1 && buf[34] == 8) {
+            else if (etype == 0x0800 && len >= RX_HDR_SIZE + 34 && eth[23] == 1 && eth[34] == 8) {
+                com1_puts("[rx] ICMP echo request!\r\n");
                 uint8_t reply[96];
-                build_icmp_reply(buf, reply, (len < 96) ? len : 96);
+                build_icmp_reply(eth, reply, (len < 96) ? len : 96);
                 /* Use the source MAC from the request to reply */
                 uint8_t dst_mac[6];
                 int k;
-                for (k = 0; k < 6; k++) dst_mac[k] = buf[6 + k];
+                for (k = 0; k < 6; k++) dst_mac[k] = eth[6 + k];
                 for (k = 0; k < 6; k++) reply[k] = dst_mac[k];
                 for (k = 0; k < 6; k++) reply[6 + k] = g_virtio.mac[k];
                 virtio_net_send(reply, (len < 96) ? len : 96);
+                com1_puts("[rx] Sent ICMP reply\r\n");
             }
         }
         if (slot < RX_BUF_COUNT) {

@@ -5,6 +5,10 @@
 #include "string.h"
 #include "packages.h"
 #include "virtio.h"
+#include "tcp.h"
+#include "udp.h"
+#include "http.h"
+#include "wifi.h"
 #include <stdbool.h>
 
 #define MAX_LINE 256
@@ -374,6 +378,129 @@ static void cmd_pkg(int argc, char** argv) {
 
 
 
+
+
+static void cmd_wifi_scan(void) {
+    terminal_setcolor(0x0E);
+    terminal_writestring("WiFi Network Scan\n");
+    terminal_writestring("=================\n");
+    terminal_setcolor(0x07);
+    wifi_init();
+    wifi_network_t networks[WIFI_MAX_NETWORKS];
+    int count = wifi_scan(networks, WIFI_MAX_NETWORKS);
+    if (count <= 0) { terminal_writestring("No networks found\n"); return; }
+    for (int i = 0; i < count; i++) {
+        terminal_setcolor(0x0B);
+        terminal_writestring("  ");
+        terminal_writestring(networks[i].ssid);
+        terminal_setcolor(0x07);
+        terminal_writestring("  RSSI: -");
+        int r = -networks[i].rssi;
+        char rbuf[8]; int ri = 0;
+        if (r == 0) { rbuf[ri++] = '0'; }
+        else { char t[8]; int ti = 0; while (r > 0) { t[ti++] = '0' + (r % 10); r /= 10; } while (ti > 0) rbuf[ri++] = t[--ti]; }
+        rbuf[ri] = 0; terminal_writestring(rbuf);
+        terminal_writestring(" dBm  Sec: ");
+        switch (networks[i].security) {
+            case WIFI_SECURITY_NONE: terminal_writestring("OPEN"); break;
+            case WIFI_SECURITY_WPA2: terminal_writestring("WPA2"); break;
+            case WIFI_SECURITY_WPA: terminal_writestring("WPA"); break;
+            case WIFI_SECURITY_WEP: terminal_writestring("WEP"); break;
+            case WIFI_SECURITY_WPA3: terminal_writestring("WPA3"); break;
+            default: terminal_writestring("?"); break;
+        }
+        terminal_putchar('\n');
+    }
+}
+
+static void cmd_wifi_connect(int argc, char** argv) {
+    if (argc < 3) { terminal_writestring("Usage: wifi-connect <ssid> <password>\n"); return; }
+    terminal_setcolor(0x0E);
+    terminal_writestring("Connecting to WiFi...\n");
+    terminal_setcolor(0x07);
+    wifi_init();
+    int result = wifi_connect(argv[1], argv[2], WIFI_SECURITY_WPA2);
+    if (result == 0) { terminal_setcolor(0x0A); terminal_writestring("Connected!\n"); }
+    else { terminal_setcolor(0x04); terminal_writestring("Failed\n"); }
+    terminal_setcolor(0x07);
+}
+
+static void cmd_wifi_status(void) {
+    terminal_setcolor(0x0E);
+    terminal_writestring("WiFi Status\n===========\n");
+    terminal_setcolor(0x07);
+    wifi_status_t status;
+    if (wifi_get_status(&status) == 0) {
+        if (status.connected) {
+            terminal_setcolor(0x0A); terminal_writestring("  Connected: YES\n");
+            terminal_setcolor(0x07); terminal_writestring("  SSID: "); terminal_writestring(status.current_ssid); terminal_putchar('\n');
+        } else { terminal_setcolor(0x04); terminal_writestring("  Connected: NO\n"); terminal_setcolor(0x07); }
+    }
+}
+
+
+
+static void cmd_tcp_test(int argc, char** argv) {
+    if (argc < 3) { terminal_writestring("Usage: tcp-test <ip> <port>\n"); return; }
+    if (!virtio_net_present()) { terminal_setcolor(0x04); terminal_writestring("Network unavailable\n"); terminal_setcolor(0x07); return; }
+    terminal_setcolor(0x0E); terminal_writestring("TCP Test\n========\n"); terminal_setcolor(0x07);
+    const char* ipstr = argv[1]; int a = 0, b = 0, c = 0, d = 0;
+    const char* p = ipstr; int part = 0;
+    while (*p && part < 4) { if (*p == '.') { part++; p++; continue; } if (*p >= '0' && *p <= '9') { if (part == 0) a = a * 10 + (*p - '0'); else if (part == 1) b = b * 10 + (*p - '0'); else if (part == 2) c = c * 10 + (*p - '0'); else d = d * 10 + (*p - '0'); } p++; }
+    uint8_t dst_ip[4] = {(uint8_t)a, (uint8_t)b, (uint8_t)c, (uint8_t)d};
+    int port = 0; p = argv[2]; while (*p) { if (*p >= '0' && *p <= '9') port = port * 10 + (*p - '0'); p++; }
+    terminal_writestring("Connecting to "); terminal_writestring(ipstr); terminal_writestring(":"); char ps[8]; int pi = 0, pt = port; if (pt == 0) ps[pi++] = '0'; else { char t[8]; int ti = 0; while (pt > 0) { t[ti++] = '0' + (pt % 10); pt /= 10; } while (ti > 0) ps[pi++] = t[--ti]; } ps[pi] = 0; terminal_writestring(ps); terminal_putchar('\n');
+    tcp_init();
+    tcp_socket_t* sock = tcp_socket_create();
+    if (!sock) { terminal_writestring("No free sockets\n"); return; }
+    int rc = tcp_connect(sock, dst_ip, (uint16_t)port);
+    if (rc != 0) { terminal_writestring("Connect failed\n"); return; }
+    terminal_setcolor(0x0A); terminal_writestring("Connected!\n"); terminal_setcolor(0x07);
+    const char* msg = "Hello from CustomOS!\n";
+    int sent = tcp_send(sock, msg, 20);
+    terminal_writestring("Sent "); char s[8]; int si = 0, st = sent; if (st == 0) s[si++] = '0'; else { char t[8]; int ti = 0; while (st > 0) { t[ti++] = '0' + (st % 10); st /= 10; } while (ti > 0) s[si++] = t[--ti]; } s[si] = 0; terminal_writestring(s); terminal_writestring(" bytes\n");
+    tcp_socket_close(sock);
+}
+
+static void cmd_udp_test(int argc, char** argv) {
+    if (argc < 3) { terminal_writestring("Usage: udp-test <ip> <port> [msg]\n"); return; }
+    if (!virtio_net_present()) { terminal_setcolor(0x04); terminal_writestring("Network unavailable\n"); terminal_setcolor(0x07); return; }
+    terminal_setcolor(0x0E); terminal_writestring("UDP Test\n========\n"); terminal_setcolor(0x07);
+    const char* ipstr = argv[1]; int a = 0, b = 0, c = 0, d = 0;
+    const char* pp = ipstr; int part = 0;
+    while (*pp && part < 4) { if (*pp == '.') { part++; pp++; continue; } if (*pp >= '0' && *pp <= '9') { if (part == 0) a = a * 10 + (*pp - '0'); else if (part == 1) b = b * 10 + (*pp - '0'); else if (part == 2) c = c * 10 + (*pp - '0'); else d = d * 10 + (*pp - '0'); } pp++; }
+    uint8_t dst_ip[4] = {(uint8_t)a, (uint8_t)b, (uint8_t)c, (uint8_t)d};
+    int port = 0; pp = argv[2]; while (*pp) { if (*pp >= '0' && *pp <= '9') port = port * 10 + (*pp - '0'); pp++; }
+    const char* msg = (argc > 3) ? argv[3] : "Hello UDP!";
+    udp_init();
+    udp_socket_t* sock = udp_socket_create();
+    if (!sock) { terminal_writestring("No free sockets\n"); return; }
+    udp_bind(sock, 0);
+    int sent = udp_sendto(sock, dst_ip, (uint16_t)port, msg, strlen(msg));
+    if (sent > 0) { terminal_setcolor(0x0A); terminal_writestring("Sent "); char s[8]; int si = 0, st = sent; if (st == 0) s[si++] = '0'; else { char t[8]; int ti = 0; while (st > 0) { t[ti++] = '0' + (st % 10); st /= 10; } while (ti > 0) s[si++] = t[--ti]; } s[si] = 0; terminal_writestring(s); terminal_writestring(" bytes\n"); terminal_setcolor(0x07); }
+    else { terminal_setcolor(0x04); terminal_writestring("Send failed\n"); terminal_setcolor(0x07); }
+    udp_socket_close(sock);
+}
+
+static void cmd_http_test(int argc, char** argv) {
+    if (argc < 2) { terminal_writestring("Usage: http-test <ip> [path]\n"); return; }
+    if (!virtio_net_present()) { terminal_setcolor(0x04); terminal_writestring("Network unavailable\n"); terminal_setcolor(0x07); return; }
+    terminal_setcolor(0x0E); terminal_writestring("HTTP Test\n=========\n"); terminal_setcolor(0x07);
+    const char* ipstr = argv[1]; int a = 0, b = 0, c = 0, d = 0;
+    const char* pp = ipstr; int part = 0;
+    while (*pp && part < 4) { if (*pp == '.') { part++; pp++; continue; } if (*pp >= '0' && *pp <= '9') { if (part == 0) a = a * 10 + (*pp - '0'); else if (part == 1) b = b * 10 + (*pp - '0'); else if (part == 2) c = c * 10 + (*pp - '0'); else d = d * 10 + (*pp - '0'); } pp++; }
+    uint8_t server_ip[4] = {(uint8_t)a, (uint8_t)b, (uint8_t)c, (uint8_t)d};
+    const char* path = (argc > 2) ? argv[2] : "/";
+    http_init();
+    http_client_t client;
+    int rc = http_client_connect(&client, server_ip, 80);
+    if (rc != 0) { terminal_writestring("HTTP connect failed\n"); return; }
+    http_response_t response;
+    int grc = http_get(&client, path, &response);
+    if (grc == 0) { terminal_setcolor(0x0A); terminal_writestring("Response: "); char sc[8]; int si = 0, st = response.status_code; if (st == 0) sc[si++] = '0'; else { char t[8]; int ti = 0; while (st > 0) { t[ti++] = '0' + (st % 10); st /= 10; } while (ti > 0) sc[si++] = t[--ti]; } sc[si] = 0; terminal_writestring(sc); terminal_putchar('\n'); terminal_setcolor(0x07); }
+    else { terminal_setcolor(0x04); terminal_writestring("HTTP GET failed\n"); terminal_setcolor(0x07); }
+    http_client_disconnect(&client);
+}
 static void cmd_net(int argc, char** argv) {
     (void)argc; (void)argv;
     terminal_setcolor(0x0E);
@@ -564,6 +691,13 @@ void shell_run(void) {
         else if (!strcmp(argv[0], "editkey")) { cmd_edit_keys(); }
         else if (!strcmp(argv[0], "pkg")) { cmd_pkg(argc, argv); }
         else if (!strcmp(argv[0], "net")) { cmd_net(argc, argv); }
+
+        else if (!strcmp(argv[0], "wifi-scan")) { cmd_wifi_scan(); }
+        else if (!strcmp(argv[0], "wifi-connect")) { cmd_wifi_connect(argc, argv); }
+        else if (!strcmp(argv[0], "wifi-status")) { cmd_wifi_status(); }
+        else if (!strcmp(argv[0], "tcp-test")) { cmd_tcp_test(argc, argv); }
+        else if (!strcmp(argv[0], "udp-test")) { cmd_udp_test(argc, argv); }
+        else if (!strcmp(argv[0], "http-test")) { cmd_http_test(argc, argv); }
         else if (!strcmp(argv[0], "ping")) { cmd_ping(argc, argv); }
         else if (!strcmp(argv[0], "exit")) { terminal_writestring("Goodbye!\n"); return; }
         else { terminal_writestring("unknown: "); terminal_writestring(argv[0]); terminal_putchar('\n'); }
