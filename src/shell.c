@@ -14,6 +14,20 @@
 #define MAX_LINE 256
 #define HISTORY_SIZE 16
 
+/* Forward declarations for wifi commands */
+static void cmd_wifi_scan(void);
+static void cmd_wifi_connect(int argc, char** argv);
+static void cmd_wifi_status(void);
+static void cmd_wifi_help(void);
+static void cmd_wifi_ip(void);
+static void cmd_wifi_gateway(void);
+static void cmd_wifi_dns(void);
+static void cmd_wifi_disconnect_cmd(void);
+static void cmd_wifi_poll_cmd(void);
+static void cmd_wifi_probe(int argc, char** argv);
+static void cmd_wifi_info(void);
+static void cmd_wifi(int argc, char** argv);
+static void print_ip(const char* label, const uint8_t ip[4]);
 /* Command history */
 static char history[HISTORY_SIZE][MAX_LINE];
 static int history_count = 0;
@@ -44,7 +58,8 @@ static void cmd_help(void) {
     terminal_writestring("  editkey   Test key inputs (ESC to exit)\n");
     terminal_writestring("  pkg       Package compatibility database\n");
     terminal_writestring("  net       Show network status\n");
-    terminal_writestring("  ping <ip>  Send ICMP ping\n");
+    terminal_writestring("  ping <ip>  Send ICMP ping \n");
+    terminal_writestring("  wifi -h     WiFi commands (scan, connect, ip, gateway...)\n");
 }
 
 static void read_line(char* buf, int max) {
@@ -477,6 +492,171 @@ static void cmd_wifi_status(void) {
 }
 
 
+static void cmd_wifi_probe(int argc, char** argv) {
+    if (argc < 2) { terminal_writestring("Usage: wifi probe <ip>\n"); return; }
+    const char* ipstr = argv[1];
+    int a = 0, b = 0, c = 0, d = 0;
+    const char* p = ipstr;
+    int part = 0;
+    while (*p && part < 4) {
+        if (*p == '.') { part++; p++; continue; }
+        if (*p >= '0' && *p <= '9') {
+            if (part == 0) a = a * 10 + (*p - '0');
+            else if (part == 1) b = b * 10 + (*p - '0');
+            else if (part == 2) c = c * 10 + (*p - '0');
+            else d = d * 10 + (*p - '0');
+        }
+        p++;
+    }
+    uint8_t target[4] = {(uint8_t)a, (uint8_t)b, (uint8_t)c, (uint8_t)d};
+    terminal_setcolor(0x0E);
+    terminal_writestring("Probing ");
+    terminal_writestring(ipstr);
+    terminal_writestring("...\n");
+    terminal_setcolor(0x07);
+    int result = wifi_probe(target, 1000);
+    if (result > 0) {
+        terminal_setcolor(0x0A);
+        terminal_writestring("  Host is reachable\n");
+        terminal_setcolor(0x07);
+    } else {
+        terminal_setcolor(0x04);
+        terminal_writestring("  Host unreachable or no network\n");
+        terminal_setcolor(0x07);
+    }
+}
+
+static void cmd_wifi_info(void) {
+    terminal_setcolor(0x0E);
+    terminal_writestring("WiFi Network Information\n");
+    terminal_writestring("========================\n");
+    terminal_setcolor(0x07);
+    uint8_t ip[4], gw[4], dns[4];
+    wifi_get_ip(ip);
+    wifi_get_gateway(gw);
+    wifi_get_dns(dns);
+    print_ip("IP Address", ip);
+    print_ip("Gateway", gw);
+    print_ip("DNS", dns);
+    wifi_status_t status;
+    if (wifi_get_status(&status) == 0) {
+        terminal_writestring("  Connected: ");
+        if (status.connected) {
+            terminal_setcolor(0x0A);
+            terminal_writestring("YES");
+        } else {
+            terminal_setcolor(0x04);
+            terminal_writestring("NO");
+        }
+        terminal_setcolor(0x07);
+        terminal_putchar('\n');
+        terminal_writestring("  SSID: ");
+        terminal_writestring(status.current_ssid);
+        terminal_putchar('\n');
+        terminal_writestring("  Networks Found: ");
+        char buf[8]; int i = 0, v = status.networks_found;
+        if (v == 0) { buf[i++] = '0'; }
+        else { char t[8]; int ti = 0; while (v > 0) { t[ti++] = '0' + (v % 10); v /= 10; } while (ti > 0) buf[i++] = t[--ti]; }
+        buf[i] = 0;
+        terminal_writestring(buf);
+        terminal_putchar('\n');
+    }
+}
+
+static void cmd_wifi(int argc, char** argv) {
+    wifi_init();
+    if (argc < 2) { cmd_wifi_help(); return; }
+    if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "help")) { cmd_wifi_help(); }
+    else if (!strcmp(argv[1], "scan")) { cmd_wifi_scan(); }
+    else if (!strcmp(argv[1], "connect")) {
+        if (argc < 3) { terminal_writestring("Usage: wifi connect <ssid> [password]\n"); return; }
+        int new_argc = argc - 1;
+        char** new_argv = &argv[1];
+        cmd_wifi_connect(new_argc, new_argv);
+    }
+    else if (!strcmp(argv[1], "status")) { cmd_wifi_status(); }
+    else if (!strcmp(argv[1], "disconnect")) { cmd_wifi_disconnect_cmd(); }
+    else if (!strcmp(argv[1], "ip")) { cmd_wifi_ip(); }
+    else if (!strcmp(argv[1], "gateway")) { cmd_wifi_gateway(); }
+    else if (!strcmp(argv[1], "dns")) { cmd_wifi_dns(); }
+    else if (!strcmp(argv[1], "probe")) { cmd_wifi_probe(argc - 1, &argv[1]); }
+    else if (!strcmp(argv[1], "poll")) { cmd_wifi_poll_cmd(); }
+    else if (!strcmp(argv[1], "info")) { cmd_wifi_info(); }
+    else {
+        terminal_writestring("Unknown wifi command: ");
+        terminal_writestring(argv[1]);
+        terminal_writestring("\nType 'wifi -h' for help\n");
+    }
+}
+static void print_ip(const char* label, const uint8_t ip[4]) {
+    terminal_setcolor(0x0E);
+    terminal_writestring("  ");
+    terminal_writestring(label);
+    terminal_writestring(": ");
+    terminal_setcolor(0x0F);
+    char buf[16]; int i = 0;
+    int parts[4] = { ip[0], ip[1], ip[2], ip[3] };
+    for (int p = 0; p < 4; p++) {
+        int v = parts[p];
+        if (v == 0) { buf[i++] = '0'; }
+        else { char t[4]; int ti = 0; while (v > 0) { t[ti++] = '0' + (v % 10); v /= 10; } while (ti > 0) buf[i++] = t[--ti]; }
+        if (p < 3) buf[i++] = '.';
+    }
+    buf[i] = 0;
+    terminal_writestring(buf);
+    terminal_setcolor(0x07);
+    terminal_putchar('\n');
+}
+
+static void cmd_wifi_help(void) {
+    terminal_setcolor(0x0E);
+    terminal_writestring("WiFi Commands (wifi -h or wifi help)\n");
+    terminal_writestring("====================================\n");
+    terminal_setcolor(0x07);
+    terminal_writestring("  wifi -h            Show this help\n");
+    terminal_writestring("  wifi help          Show this help\n");
+    terminal_writestring("  wifi scan          Scan for WiFi networks\n");
+    terminal_writestring("  wifi connect <ssid> [password]  Connect to a network\n");
+    terminal_writestring("  wifi status        Show current WiFi status\n");
+    terminal_writestring("  wifi disconnect    Disconnect from network\n");
+    terminal_writestring("  wifi ip            Show local IP address\n");
+    terminal_writestring("  wifi gateway       Show default gateway\n");
+    terminal_writestring("  wifi dns           Show DNS server\n");
+    terminal_writestring("  wifi probe <ip>    Probe a host on the network\n");
+    terminal_writestring("  wifi poll          Poll network for packets\n");
+    terminal_writestring("  wifi info          Show full network info\n");
+}
+
+static void cmd_wifi_ip(void) {
+    uint8_t ip[4];
+    if (wifi_get_ip(ip) != 0) { terminal_writestring("Error getting IP\n"); return; }
+    print_ip("IP Address", ip);
+}
+
+static void cmd_wifi_gateway(void) {
+    uint8_t gw[4];
+    if (wifi_get_gateway(gw) != 0) { terminal_writestring("Error getting gateway\n"); return; }
+    print_ip("Gateway", gw);
+}
+
+static void cmd_wifi_dns(void) {
+    uint8_t dns[4];
+    if (wifi_get_dns(dns) != 0) { terminal_writestring("Error getting DNS\n"); return; }
+    print_ip("DNS Server", dns);
+}
+
+static void cmd_wifi_disconnect_cmd(void) {
+    wifi_disconnect();
+    terminal_setcolor(0x0A);
+    terminal_writestring("Disconnected from WiFi network\n");
+    terminal_setcolor(0x07);
+}
+
+static void cmd_wifi_poll_cmd(void) {
+    wifi_poll();
+    terminal_writestring("Network poll complete\n");
+}
+
 
 static void cmd_tcp_test(int argc, char** argv) {
     if (argc < 3) { terminal_writestring("Usage: tcp-test <ip> <port>\n"); return; }
@@ -810,6 +990,7 @@ void shell_run(void) {
         else if (!strcmp(argv[0], "pkg")) { cmd_pkg(argc, argv); }
         else if (!strcmp(argv[0], "net")) { cmd_net(argc, argv); }
 
+        else if (!strcmp(argv[0], "wifi")) { cmd_wifi(argc, argv); }
         else if (!strcmp(argv[0], "wifi-scan")) { cmd_wifi_scan(); }
         else if (!strcmp(argv[0], "wifi-connect")) { cmd_wifi_connect(argc, argv); }
         else if (!strcmp(argv[0], "wifi-status")) { cmd_wifi_status(); }
