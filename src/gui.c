@@ -434,24 +434,32 @@ void gui_demo(void) {
             draw_rect(box_x, box_y, box_w, box_h, COLOR_BLACK);
         }
         
-        /* Mouse ball - tracks mouse position */
-        /* Draw a bigger mouse ball */
+        /* BIG Mouse cursor - a large circle that follows the mouse */
+        /* This is intentionally much bigger than the QEMU window's mouse cursor
+         * so you can see exactly where the OS thinks the mouse is. */
         uint8_t mouse_color = COLOR_WHITE;
         if (btns & 0x01) mouse_color = COLOR_RED;  /* Left click */
         if (btns & 0x02) mouse_color = COLOR_BLUE; /* Right click */
         if ((btns & 0x03) == 0x03) mouse_color = COLOR_LIGHT_MAGENTA;
         
-        /* Outer ring (3D shadow) */
-        draw_circle(mx, my, 4, COLOR_DARK_GREY);
-        /* Outline */
-        draw_circle(mx, my, 3, COLOR_LIGHT_GREY);
-        /* Big filled ball */
-        draw_circle_filled(mx, my, 2, mouse_color);
-        /* Center dot */
+        /* Outer dark ring (big circle outline) */
+        draw_circle(mx, my, 8, COLOR_DARK_GREY);
+        /* Middle light ring */
+        draw_circle(mx, my, 7, COLOR_LIGHT_GREY);
+        /* Inner colored ring */
+        draw_circle(mx, my, 6, mouse_color);
+        /* Filled center ball */
+        draw_circle_filled(mx, my, 4, mouse_color);
+        /* Center crosshair dot */
         draw_pixel(mx, my, COLOR_BLACK);
-        /* Highlight pixel */
-        if (mx > 0 && my > 0)
-            draw_pixel(mx - 1, my - 1, COLOR_WHITE);
+        /* Center crosshair (small + shape) */
+        if (mx > 0) draw_pixel(mx - 1, my, COLOR_BLACK);
+        if (mx < 79) draw_pixel(mx + 1, my, COLOR_BLACK);
+        if (my > 0) draw_pixel(mx, my - 1, COLOR_BLACK);
+        if (my < 24) draw_pixel(mx, my + 1, COLOR_BLACK);
+        /* White highlight in upper-left */
+        if (mx > 1 && my > 1)
+            draw_pixel(mx - 2, my - 2, COLOR_WHITE);
         
         /* === STATIC GRID: Status Bar ===
          * Grid cells at fixed positions. Calculated once (first frame),
