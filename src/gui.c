@@ -141,10 +141,70 @@ void gui_delay(int ms) {
 }
 
 
+/* === Static Grid System ===
+ * Cells at fixed grid positions. Only redraw when value changes.
+ * Much more efficient than unconditional text rewriting each frame. */
+typedef struct {
+    int row;
+    int col;
+    int width;
+    char last_val[16];
+    uint8_t color;
+} grid_cell_t;
+
+static void grid_init(grid_cell_t* c, int row, int col, int width, uint8_t color) {
+    c->row = row;
+    c->col = col;
+    c->width = width;
+    c->color = color;
+    c->last_val[0] = 0;
+}
+
+static void grid_clear_cell(const grid_cell_t* c) {
+    int k;
+    for (k = 0; k < c->width && (c->col + k) < 80; k++) {
+        framebuffer[c->row * 80 + c->col + k] = ((uint16_t)c->color << 8) | ' ';
+    }
+}
+
+static void grid_draw_str(const grid_cell_t* c, const char* s) {
+    int k;
+    for (k = 0; s[k] && k < c->width && (c->col + k) < 80; k++) {
+        framebuffer[c->row * 80 + c->col + k] = ((uint16_t)c->color << 8) | s[k];
+    }
+}
+
+static void grid_set_str(grid_cell_t* c, const char* s) {
+    if (strcmp(c->last_val, s) == 0) return;
+    grid_clear_cell(c);
+    grid_draw_str(c, s);
+    int i;
+    for (i = 0; s[i] && i < 15; i++) c->last_val[i] = s[i];
+    c->last_val[i] = 0;
+}
+
+static void grid_set_int2(grid_cell_t* c, int value) {
+    char buf[4];
+    if (value < 0) value = 0;
+    if (value > 99) value = 99;
+    buf[0] = '0' + ((value / 10) % 10);
+    buf[1] = '0' + (value % 10);
+    buf[2] = 0;
+    grid_set_str(c, buf);
+}
+
+static void grid_label(int row, int col, const char* s, uint8_t color) {
+    int i;
+    for (i = 0; s[i] && (col + i) < 80; i++) {
+        framebuffer[row * 80 + col + i] = ((uint16_t)color << 8) | s[i];
+    }
+}
+
+/* === End Static Grid System ===*/
+
 void gui_demo(void) {
     int anim_x = 10, anim_y = 5;
     int dx = 1, dy = 1;
-    int x;
     
     /* Button layout: 6 buttons in a row */
     #define NUM_BUTTONS 6
@@ -164,7 +224,8 @@ void gui_demo(void) {
     int last_clicked = -1;
     int click_x = -1, click_y = -1;
     int click_happened = 0;
-    int hovered_btn = -1;    /* which button the mouse is currently over */
+    int hovered_btn = -1;
+    int prev_left = 0;        /* track previous left button state for click detection */
     uint8_t bg_color = COLOR_BLACK;
     
     while (1) {
@@ -177,14 +238,17 @@ void gui_demo(void) {
         int my = mouse_get_y();
         int btns = mouse_get_buttons();
         
-        /* Consume any click event from the mouse driver (with position) */
-        int tmp_x, tmp_y;
-        if (mouse_consume_click(&tmp_x, &tmp_y)) {
-            click_happened = 1;
-            click_x = tmp_x;
-            click_y = tmp_y;
+        /* Detect click using direct button state tracking (more reliable) */
+        int left_now = (btns & 0x01) ? 1 : 0;
+        if (prev_left == 0 && left_now == 1) {
+            click_x = mx;
+            click_y = my;
         }
-        
+        if (prev_left == 1 && left_now == 0) {
+            click_happened = 1;
+        }
+        prev_left = left_now;
+
         /* Determine which button (if any) the mouse is currently over */
         hovered_btn = -1;
         {
@@ -200,7 +264,6 @@ void gui_demo(void) {
         }
         
         /* Track which button is currently being pressed (for visual feedback) */
-        int left_now = (btns & 0x01) ? 1 : 0;
         if (left_now) {
             pressed_btn = hovered_btn;
         } else {
@@ -237,10 +300,10 @@ void gui_demo(void) {
                         COLOR_DARK_GREY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GREEN, COLOR_LIGHT_CYAN,
                         COLOR_LIGHT_RED, COLOR_LIGHT_MAGENTA, COLOR_YELLOW, COLOR_WHITE
                     };
-                    int idx = (click_x * 16) / 80;
-                    if (idx < 0) idx = 0;
-                    if (idx > 15) idx = 15;
-                    bg_color = palette[idx];
+                    int band = click_x / 5;
+                    if (band < 0) band = 0;
+                    if (band > 15) band = 15;
+                    bg_color = palette[band];
                 }
             }
             click_happened = 0;
@@ -248,14 +311,19 @@ void gui_demo(void) {
         
         gui_clear(bg_color);
         
-        /* Title bar */
+        /* Title bar: blue background with "CustomOS" centered in white at column 36 */
         draw_rect_filled(0, 0, 80, 1, COLOR_BLUE);
-        framebuffer[35] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'C';
-        framebuffer[36] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'u';
-        framebuffer[37] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 's';
-        framebuffer[38] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 't';
-        framebuffer[39] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'O';
-        framebuffer[40] = ((uint16_t)COLOR_LIGHT_CYAN << 8) | 'S';
+        {
+            const char* title = "CustomOS";
+            int tlen = 8;
+            int tcol = 36;
+            int ti;
+            for (ti = 0; ti < tlen; ti++) {
+                if (tcol + ti >= 0 && tcol + ti < 80) {
+                    framebuffer[tcol + ti] = ((uint16_t)COLOR_WHITE << 8) | (uint8_t)title[ti];
+                }
+            }
+        }
         
         /* Decorative shapes */
         draw_rect(5, 5, 15, 8, COLOR_LIGHT_GREEN);
@@ -340,87 +408,73 @@ void gui_demo(void) {
         if (mx > 0 && my > 0)
             draw_pixel(mx - 1, my - 1, COLOR_WHITE);
         
-        /* Clear row 23 first, then draw the position display */
-        draw_rect_filled(0, 23, 80, 1, COLOR_DARK_GREY);
+        /* === STATIC GRID: Status Bar ===
+         * Grid cells at fixed positions. Calculated once (first frame),
+         * then only updated when values change. Much faster than unconditional rewrite. */
+        static int grid_init_done = 0;
+        static grid_cell_t cell_mx, cell_my, cell_status;
+        static int last_mx = -1, last_my = -1;
+        static int last_pressed = -1, last_last_clicked = -1;
         
-        /* Mouse position display - shows coords from top-left (0,0) */
-        const char* pos_msg = "Mouse X,Y: ";
-        int label_col = 0;
-        for (x = 0; pos_msg[x] && (label_col + x) < 80; x++) {
-            framebuffer[23 * 80 + label_col + x] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | pos_msg[x];
-        }
-        int col = label_col + x;  /* column after label */
-        
-        /* Write X with fixed width (2 digits, zero-padded) */
-        {
-            int v = mx;
-            char digits[3];
-            digits[0] = '0' + ((v / 10) % 10);
-            digits[1] = '0' + (v % 10);
-            digits[2] = '\0';
-            for (x = 0; digits[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | digits[x];
-            }
-        }
-        
-        /* Comma separator */
-        if (col < 80) {
-            framebuffer[23 * 80 + col++] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | ',';
+        if (!grid_init_done) {
+            draw_rect_filled(0, 23, 80, 1, COLOR_DARK_GREY);
+            draw_rect_filled(0, 24, 80, 1, COLOR_DARK_GREY);
+            grid_label(23, 0, "X:", COLOR_WHITE);
+            grid_label(23, 3, "Y:", COLOR_WHITE);
+            grid_label(23, 6, "Status:", COLOR_WHITE);
+            grid_label(24, 0, "Click anywhere to change BG - BACKSPACE:exit", COLOR_WHITE);
+            grid_init(&cell_mx, 23, 2, 2, COLOR_WHITE);
+            grid_init(&cell_my, 23, 5, 2, COLOR_WHITE);
+            grid_init(&cell_status, 23, 13, 20, COLOR_WHITE);
+            grid_set_int2(&cell_mx, mx);
+            grid_set_int2(&cell_my, my);
+            grid_set_str(&cell_status, "Click anywhere!");
+            last_mx = mx;
+            last_my = my;
+            last_pressed = -1;
+            last_last_clicked = -1;
+            grid_init_done = 1;
         }
         
-        /* Write Y with fixed width (2 digits, zero-padded) */
-        {
-            int v = my;
-            char digits[3];
-            digits[0] = '0' + ((v / 10) % 10);
-            digits[1] = '0' + (v % 10);
-            digits[2] = '\0';
-            for (x = 0; digits[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | digits[x];
-            }
+        if (mx != last_mx) {
+            grid_set_int2(&cell_mx, mx);
+            last_mx = mx;
+        }
+        if (my != last_my) {
+            grid_set_int2(&cell_my, my);
+            last_my = my;
         }
         
-        /* Show which button was clicked last or currently being held */
         if (pressed_btn >= 0) {
-            const char* pressing_msg = "  Holding: ";
-            for (x = 0; pressing_msg[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | pressing_msg[x];
-            }
-            const char* cname = btn_labels[pressed_btn];
-            for (x = 0; cname[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | cname[x];
+            if (last_pressed != pressed_btn || last_last_clicked != -2) {
+                char buf[16];
+                const char* cn = btn_labels[pressed_btn];
+                int i;
+                buf[0] = 'H'; buf[1] = ':'; buf[2] = ' ';
+                for (i = 0; cn[i] && i < 12; i++) buf[3 + i] = cn[i];
+                buf[3 + i] = 0;
+                grid_set_str(&cell_status, buf);
+                last_pressed = pressed_btn;
+                last_last_clicked = -2;
             }
         } else if (last_clicked >= 0) {
-            const char* clicked_msg = "  BG: ";
-            for (x = 0; clicked_msg[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | clicked_msg[x];
-            }
-            const char* cname = btn_labels[last_clicked];
-            for (x = 0; cname[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | cname[x];
+            if (last_last_clicked != last_clicked || last_pressed != -2) {
+                char buf[16];
+                const char* cn = btn_labels[last_clicked];
+                int i;
+                buf[0] = 'B'; buf[1] = ':'; buf[2] = ' ';
+                for (i = 0; cn[i] && i < 12; i++) buf[3 + i] = cn[i];
+                buf[3 + i] = 0;
+                grid_set_str(&cell_status, buf);
+                last_last_clicked = last_clicked;
+                last_pressed = -2;
             }
         } else {
-            const char* hint_msg = "  Click anywhere!";
-            for (x = 0; hint_msg[x] && col < 80; x++) {
-                framebuffer[23 * 80 + col++] = 
-                    ((uint16_t)COLOR_DARK_GREY << 8) | hint_msg[x];
+            if (last_pressed != -1 && last_last_clicked != -1) {
+                grid_set_str(&cell_status, "Click anywhere!");
+                last_pressed = -1;
+                last_last_clicked = -1;
             }
-        }
-        
-        /* Status bar */
-        draw_rect_filled(0, 24, 80, 1, COLOR_DARK_GREY);
-        const char* msg = "Click anywhere to change BG - BACKSPACE:exit";
-        for (x = 0; msg[x] && (x + 2) < 80; x++) {
-            framebuffer[(24 * 80) + x + 2] = 
-                ((uint16_t)COLOR_DARK_GREY << 8) | (uint16_t)(uint8_t)msg[x];
         }
         
         gui_update();
