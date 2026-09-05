@@ -370,22 +370,6 @@ void gui_demo(void) {
                     draw_rect_filled(bx, by, btn_w, btn_h, fill_color);
                 }
                 
-                /* Draw detection box around button using the button's own color */
-                if (i == boxed_btn) {
-                    int box_pad = 1;
-                    int box_x = bx - box_pad;
-                    int box_y = by - box_pad;
-                    int box_w = btn_w + box_pad * 2;
-                    int box_h = btn_h + box_pad * 2;
-                    /* Clamp to screen bounds */
-                    if (box_x < 0) box_x = 0;
-                    if (box_y < 0) box_y = 0;
-                    if (box_x + box_w > 80) box_w = 80 - box_x;
-                    if (box_y + box_h > 25) box_h = 25 - box_y;
-                    /* Draw box outline in button's color */
-                    draw_rect(box_x, box_y, box_w, box_h, fill_color);
-                }
-                
                 /* Button border (3D effect) */
                 draw_horizontal_line(bx, by, btn_w, COLOR_WHITE);
                 draw_vertical_line(bx, by, btn_h, COLOR_WHITE);
@@ -406,6 +390,48 @@ void gui_demo(void) {
                         ((uint16_t)text_color << 8) | lbl[k];
                 }
             }
+        }
+        
+        /* Draw detection box AFTER all buttons (so it's on top) */
+        if (boxed_btn >= 0 && boxed_btn < NUM_BUTTONS) {
+            uint8_t box_color = btn_colors[boxed_btn];
+            int box_pad = 1;
+            int box_x = btn_x_start + boxed_btn * (btn_w + btn_spacing) - box_pad;
+            int box_y = btn_y - box_pad;
+            int box_w = btn_w + box_pad * 2;
+            int box_h = btn_h + box_pad * 2;
+            /* Clamp to screen bounds */
+            if (box_x < 0) box_x = 0;
+            if (box_y < 0) box_y = 0;
+            if (box_x + box_w > 80) box_w = 80 - box_x;
+            if (box_y + box_h > 25) box_h = 25 - box_y;
+            /* Draw the box as a filled rectangle in the button's color (background) */
+            /* Then draw the button on top of the filled area */
+            draw_rect_filled(box_x, box_y, box_w, box_h, box_color);
+            /* Redraw the button on top so it's visible inside the box */
+            {
+                int bx = btn_x_start + boxed_btn * (btn_w + btn_spacing);
+                int by = btn_y;
+                draw_rect_filled(bx, by, btn_w, btn_h, box_color);
+                /* Redraw the white/black 3D borders */
+                draw_horizontal_line(bx, by, btn_w, COLOR_WHITE);
+                draw_vertical_line(bx, by, btn_h, COLOR_WHITE);
+                draw_horizontal_line(bx, by + btn_h - 1, btn_w, COLOR_BLACK);
+                draw_vertical_line(bx + btn_w - 1, by, btn_h, COLOR_BLACK);
+                /* Redraw the label */
+                const char* lbl = btn_labels[boxed_btn];
+                int lbl_len = 0;
+                while (lbl[lbl_len]) lbl_len++;
+                int text_col = bx + (btn_w - lbl_len) / 2;
+                int text_row = by + btn_h / 2;
+                int k;
+                for (k = 0; lbl[k] && (text_col + k) < 80; k++) {
+                    framebuffer[text_row * 80 + text_col + k] =
+                        ((uint16_t)COLOR_WHITE << 8) | lbl[k];
+                }
+            }
+            /* Draw a contrasting border around the filled box using BLACK for visibility */
+            draw_rect(box_x, box_y, box_w, box_h, COLOR_BLACK);
         }
         
         /* Mouse ball - tracks mouse position */
