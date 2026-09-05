@@ -113,7 +113,7 @@ void main(void) {
     fs_init();
 
     terminal_setcolor(VGA_COLOR_LIGHT_CYAN);
-    terminal_writestring("CustomOS 0.1 loaded successfully!\n");
+    terminal_writestring("CustomOS 0.2 loaded successfully!\n");
     terminal_setcolor(VGA_COLOR_LIGHT_GREY);
 
     /* Initialize network stack */

@@ -43,7 +43,7 @@ static void print_prompt(void) {
 
 static void cmd_help(void) {
     terminal_setcolor(0x0E);
-    terminal_writestring("CustomOS 0.1 - Commands:\n");
+    terminal_writestring("CustomOS 0.2 - Commands:\n");
     terminal_setcolor(0x07);
     terminal_writestring("  help       Show this help\n");
     terminal_writestring("  clear      Clear screen\n");
@@ -965,7 +965,7 @@ void shell_run(void) {
     char* argv[8];
     int argc;
     
-    terminal_writestring("CustomOS 0.1 - Welcome!\n");
+    terminal_writestring("CustomOS 0.2 - Welcome!\n");
     terminal_writestring("Type 'help' for commands.\n\n");
     
     while (1) {
