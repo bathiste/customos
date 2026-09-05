@@ -207,7 +207,7 @@ void gui_demo(void) {
             pressed_btn = -1;
         }
         
-        /* Process a click event: was it on a button? */
+        /* Process a click event: click anywhere to change the whole screen color */
         if (click_happened) {
             /* Find which button (if any) the click was on */
             int clicked_btn = -1;
@@ -221,8 +221,27 @@ void gui_demo(void) {
                 }
             }
             if (clicked_btn >= 0) {
+                /* Button click - use button color */
                 last_clicked = clicked_btn;
                 bg_color = btn_colors[clicked_btn];
+            } else {
+                /* Click on the colored area - use the color at the click position */
+                uint8_t picked = get_pixel(click_x, click_y);
+                if (picked != COLOR_BLACK) {
+                    bg_color = picked;
+                } else {
+                    /* Map X position to one of 16 VGA colors */
+                    uint8_t palette[16] = {
+                        COLOR_BLACK, COLOR_BLUE, COLOR_GREEN, COLOR_CYAN,
+                        COLOR_RED, COLOR_MAGENTA, COLOR_BROWN, COLOR_LIGHT_GREY,
+                        COLOR_DARK_GREY, COLOR_LIGHT_BLUE, COLOR_LIGHT_GREEN, COLOR_LIGHT_CYAN,
+                        COLOR_LIGHT_RED, COLOR_LIGHT_MAGENTA, COLOR_YELLOW, COLOR_WHITE
+                    };
+                    int idx = (click_x * 16) / 80;
+                    if (idx < 0) idx = 0;
+                    if (idx > 15) idx = 15;
+                    bg_color = palette[idx];
+                }
             }
             click_happened = 0;
         }
@@ -389,7 +408,7 @@ void gui_demo(void) {
                     ((uint16_t)COLOR_DARK_GREY << 8) | cname[x];
             }
         } else {
-            const char* hint_msg = "  Click a button!";
+            const char* hint_msg = "  Click anywhere!";
             for (x = 0; hint_msg[x] && col < 80; x++) {
                 framebuffer[23 * 80 + col++] = 
                     ((uint16_t)COLOR_DARK_GREY << 8) | hint_msg[x];
@@ -398,7 +417,7 @@ void gui_demo(void) {
         
         /* Status bar */
         draw_rect_filled(0, 24, 80, 1, COLOR_DARK_GREY);
-        const char* msg = "Click buttons to change BG - BACKSPACE:exit";
+        const char* msg = "Click anywhere to change BG - BACKSPACE:exit";
         for (x = 0; msg[x] && (x + 2) < 80; x++) {
             framebuffer[(24 * 80) + x + 2] = 
                 ((uint16_t)COLOR_DARK_GREY << 8) | (uint16_t)(uint8_t)msg[x];
