@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include "virtio.h"
+#include "wifi_usb.h"
 #include "string.h"
 #include <stddef.h>
 
@@ -14,11 +15,23 @@ void wifi_init(void) {
     g_connection.connected = 0;
     g_connected = 0;
     g_initialized = 1;
+
+    /* Try to bring up the USB WiFi adapter (RTL8188EU or compatible).
+     * If a real adapter is plugged in, this initialises the chip and
+     * makes rtl8188eu_present() return 1. We use that to override the
+     * mock scan results below. */
+    rtl8188eu_init();
 }
 
 int wifi_scan(wifi_network_t* networks, int max_networks) {
     if (!g_initialized) wifi_init();
     if (!networks || max_networks <= 0) return -1;
+
+    /* Preferred path: real USB adapter (RTL8188EU). */
+    if (rtl8188eu_present()) {
+        return rtl8188eu_scan(networks, max_networks);
+    }
+
     if (!virtio_net_present()) return 0;
     int count = 0;
     struct {

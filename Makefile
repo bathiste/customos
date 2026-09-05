@@ -14,7 +14,7 @@ SRC = src
 BUILD = build
 KERNEL = $(BUILD)/kernel.bin
 
-OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o $(BUILD)/pci.o $(BUILD)/virtio.o $(BUILD)/tcp.o $(BUILD)/udp.o $(BUILD)/http.o $(BUILD)/wifi.o
+OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o $(BUILD)/pci.o $(BUILD)/virtio.o $(BUILD)/tcp.o $(BUILD)/udp.o $(BUILD)/http.o $(BUILD)/wifi.o $(BUILD)/wifi_usb.o $(BUILD)/usb_hcd.o
 
 all: $(KERNEL)
 
@@ -78,6 +78,12 @@ $(BUILD)/http.o: $(SRC)/http.c $(SRC)/http.h $(SRC)/tcp.h $(SRC)/string.h $(SRC)
 $(BUILD)/wifi.o: $(SRC)/wifi.c $(SRC)/wifi.h $(SRC)/virtio.h $(SRC)/string.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/usb_hcd.o: $(SRC)/usb_hcd.c $(SRC)/usb_hcd.h $(SRC)/pci.h $(SRC)/io.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/wifi_usb.o: $(SRC)/wifi_usb.c $(SRC)/wifi_usb.h $(SRC)/usb_hcd.h $(SRC)/wifi.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(KERNEL): $(OBJS) | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 
@@ -98,6 +104,14 @@ run: iso
 
 run-net: iso
 	qemu-system-i386 -cdrom customos.iso -boot d -m 128 -vga std -netdev user,id=net0 -device virtio-net-pci,netdev=net0 -serial file:/tmp/qemu_serial.log -display sdl
+
+run-wifi: iso
+	qemu-system-i386 -cdrom customos.iso -boot d -m 256 -vga std \
+	    -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
+	    -device usb-ehci -device usb-tablet \
+	    -serial file:/tmp/qemu_serial.log -display sdl
+
+.PHONY: run-wifi
 
 clean:
 	$(RM) -r $(BUILD) $(ISO) customos.iso disk.img
