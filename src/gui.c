@@ -221,6 +221,7 @@ void gui_demo(void) {
         "RED", "GREEN", "BLUE", "YELLOW", "CYAN", "MAGENTA"
     };
     int pressed_btn = -1;
+    int boxed_btn = -1;        /* button that currently has a colored box around it */
     int last_clicked = -1;
     int click_x = -1, click_y = -1;
     int click_happened = 0;
@@ -266,8 +267,10 @@ void gui_demo(void) {
         /* Track which button is currently being pressed (for visual feedback) */
         if (left_now) {
             pressed_btn = hovered_btn;
+            boxed_btn = hovered_btn;  /* show box while pressing */
         } else {
             pressed_btn = -1;
+            boxed_btn = hovered_btn;  /* show box when hovering */
         }
         
         /* Process a click event: click anywhere to change the whole screen color */
@@ -365,6 +368,22 @@ void gui_demo(void) {
                     draw_rect_filled(bx + 1, by, btn_w - 2, btn_h, fill_color);
                 } else {
                     draw_rect_filled(bx, by, btn_w, btn_h, fill_color);
+                }
+                
+                /* Draw detection box around button using the button's own color */
+                if (i == boxed_btn) {
+                    int box_pad = 1;
+                    int box_x = bx - box_pad;
+                    int box_y = by - box_pad;
+                    int box_w = btn_w + box_pad * 2;
+                    int box_h = btn_h + box_pad * 2;
+                    /* Clamp to screen bounds */
+                    if (box_x < 0) box_x = 0;
+                    if (box_y < 0) box_y = 0;
+                    if (box_x + box_w > 80) box_w = 80 - box_x;
+                    if (box_y + box_h > 25) box_h = 25 - box_y;
+                    /* Draw box outline in button's color */
+                    draw_rect(box_x, box_y, box_w, box_h, fill_color);
                 }
                 
                 /* Button border (3D effect) */
