@@ -9,6 +9,10 @@
 #include "udp.h"
 #include "http.h"
 #include "wifi.h"
+#include "wifi_usb.h"
+#include "ndis.h"
+#include "cfg80211.h"
+#include "wlan_compat.h"
 #include <stdbool.h>
 
 #define MAX_LINE 256
@@ -26,6 +30,7 @@ static void cmd_wifi_disconnect_cmd(void);
 static void cmd_wifi_poll_cmd(void);
 static void cmd_wifi_probe(int argc, char** argv);
 static void cmd_wifi_info(void);
+static void cmd_wifi_api(int argc, char** argv);
 static void cmd_wifi(int argc, char** argv);
 static void print_ip(const char* label, const uint8_t ip[4]);
 /* Command history */
@@ -563,6 +568,77 @@ static void cmd_wifi_info(void) {
     }
 }
 
+/* Demonstrate Windows NDIS and Linux cfg80211 API compatibility.
+ * Shows that the same driver (RTL8188EU) is reachable through both
+ * the Windows NDIS 6.x miniport interface and the Linux cfg80211
+ * (wiphy) interface. */
+static void cmd_wifi_api(int argc, char** argv) {
+    (void)argc; (void)argv;
+    terminal_setcolor(0x0E);
+    terminal_writestring("Driver API compatibility (Windows + Linux)\n");
+    terminal_writestring("============================================\n");
+    terminal_setcolor(0x07);
+
+    ndis_init();
+    cfg80211_init();
+
+    /* Try the Windows path: ndis_open returns a binding. */
+    terminal_writestring("[Windows]  ndis_open(0BDA:8179) -> ");
+    NDIS_HANDLE nh = ndis_open(0x0BDA, 0x8179);
+    if (nh) {
+        terminal_setcolor(0x0A);
+        terminal_writestring("OK (NDIS miniport bound)\n");
+        terminal_setcolor(0x07);
+        NDIS_WLAN_BSS_LIST nlist;
+        int n = ndis_wifi_scan(nh, &nlist);
+        terminal_writestring("           ndis_wifi_scan -> ");
+        char buf[8]; int i = 0, v = n;
+        if (v == 0) { buf[i++] = '0'; }
+        else { char t[8]; int ti = 0; while (v > 0) { t[ti++] = '0' + (v % 10); v /= 10; } while (ti > 0) buf[i++] = t[--ti]; }
+        buf[i] = 0;
+        terminal_writestring(buf);
+        terminal_writestring(" networks (NDIS_WLAN_BSS_ENTRY)\n");
+        ndis_close(nh);
+    } else {
+        terminal_setcolor(0x0C);
+        terminal_writestring("no adapter (or NDIS_STATUS_ADAPTER_NOT_FOUND)\n");
+        terminal_setcolor(0x07);
+    }
+
+    /* Try the Linux path: wiphy_first returns a registered wiphy. */
+    terminal_writestring("[Linux]    wiphy_first() -> ");
+    struct wiphy* w = wiphy_first();
+    if (w) {
+        terminal_setcolor(0x0A);
+        terminal_writestring("OK (cfg80211 wiphy registered)\n");
+        terminal_setcolor(0x07);
+        struct cfg80211_bss_list blist;
+        int n = cfg80211_get_scan_results(w, &blist);
+        terminal_writestring("           cfg80211_get_scan_results -> ");
+        char buf[8]; int i = 0, v = n;
+        if (v == 0) { buf[i++] = '0'; }
+        else { char t[8]; int ti = 0; while (v > 0) { t[ti++] = '0' + (v % 10); v /= 10; } while (ti > 0) buf[i++] = t[--ti]; }
+        buf[i] = 0;
+        terminal_writestring(buf);
+        terminal_writestring(" networks (cfg80211_bss)\n");
+    } else {
+        terminal_setcolor(0x0C);
+        terminal_writestring("no wiphy registered\n");
+        terminal_setcolor(0x07);
+    }
+
+    /* Use the wlan_compat shim: same call goes through both APIs. */
+    terminal_writestring("[Compat]   wlan_compat_open() + scan\n");
+    void* h = wlan_compat_open();
+    if (h) {
+        wlan_api_t used = wlan_compat_get_api();
+        if (used == WLAN_API_AUTO) used = rtl8188eu_present() ? WLAN_API_CFG80211 : WLAN_API_NDIS;
+        terminal_writestring("           active API = ");
+        terminal_writestring(used == WLAN_API_NDIS ? "NDIS" : "cfg80211");
+        terminal_putchar('\n');
+    }
+}
+
 static void cmd_wifi(int argc, char** argv) {
     wifi_init();
     if (argc < 2) { cmd_wifi_help(); return; }
@@ -582,6 +658,7 @@ static void cmd_wifi(int argc, char** argv) {
     else if (!strcmp(argv[1], "probe")) { cmd_wifi_probe(argc - 1, &argv[1]); }
     else if (!strcmp(argv[1], "poll")) { cmd_wifi_poll_cmd(); }
     else if (!strcmp(argv[1], "info")) { cmd_wifi_info(); }
+    else if (!strcmp(argv[1], "api"))  { cmd_wifi_api(argc, argv); }
     else {
         terminal_writestring("Unknown wifi command: ");
         terminal_writestring(argv[1]);
@@ -625,6 +702,7 @@ static void cmd_wifi_help(void) {
     terminal_writestring("  wifi probe <ip>    Probe a host on the network\n");
     terminal_writestring("  wifi poll          Poll network for packets\n");
     terminal_writestring("  wifi info          Show full network info\n");
+    terminal_writestring("  wifi api           Show Windows+Linux driver API compat\n");
 }
 
 static void cmd_wifi_ip(void) {

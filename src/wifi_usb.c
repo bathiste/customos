@@ -8,6 +8,7 @@
 
 #include "wifi_usb.h"
 #include "wifi.h"
+#include "cfg80211.h"
 #include "usb_hcd.h"
 #include "string.h"
 #include <stddef.h>
@@ -160,6 +161,7 @@ int rtl8188eu_init(void) {
     h2c_write(H2C_MSG_SETOPMODE, &mode, 1);
     g_op_mode = RTL8188EU_OP_INFRASTRUCTURE;
     g_present = 1;
+    rtl8188eu_register_wiphy();
     return 0;
 }
 
@@ -221,3 +223,49 @@ int rtl8188eu_get_bssid(uint8_t* out_6) {
 
 int rtl8188eu_get_rssi(void) { return g_rssi; }
 
+
+
+/* ------------------------------------------------------------------ */
+/*  cfg80211 wiphy (Linux API)                                        */
+/* ------------------------------------------------------------------ */
+
+static struct wiphy g_wiphy;
+static uint8_t g_mac[6] = { 0x02, 0x80, 0x00, 0xA8, 0x12, 0x34 };
+
+static int rtw_scan(struct wiphy* w, struct cfg80211_scan_request* req) {
+    (void)w; (void)req;
+    wifi_network_t nets[16];
+    int n = rtl8188eu_scan(nets, 16);
+    cfg80211_scan_done(w, n < 0 ? 1 : 0);
+    return n < 0 ? -1 : 0;
+}
+
+static int rtw_connect(struct wiphy* w, const char* ssid, const char* psk) {
+    (void)w;
+    if (!ssid) return -1;
+    char buf[64];
+    int i = 0;
+    for (; ssid[i] && i < (int)sizeof(buf) - 1; i++) buf[i] = ssid[i];
+    buf[i] = 0;
+    return wifi_connect(buf, psk, WIFI_SECURITY_WPA2);
+}
+
+static int rtw_disconnect(struct wiphy* w) {
+    (void)w;
+    wifi_disconnect();
+    return 0;
+}
+
+void rtl8188eu_register_wiphy(void) {
+    cfg80211_init();
+    g_wiphy.priv = NULL;
+    g_wiphy.flags = WIPHY_FLAG_NETNS_OK;
+    g_wiphy.iftype = NL80211_IFTYPE_STATION;
+    g_wiphy.perm_addr = (const char*)g_mac;
+    g_wiphy.max_scan_ssids = CFG80211_MAX_SCAN_SSIDS;
+    g_wiphy.signal_type = 1;
+    g_wiphy.scan = rtw_scan;
+    g_wiphy.connect = rtw_connect;
+    g_wiphy.disconnect = rtw_disconnect;
+    wiphy_register(&g_wiphy);
+}

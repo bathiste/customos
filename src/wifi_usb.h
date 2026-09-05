@@ -118,4 +118,8 @@ int  rtl8188eu_probe(const char* ssid);
 int  rtl8188eu_get_bssid(uint8_t* out_6);
 int  rtl8188eu_get_rssi(void);
 
+/* Register a cfg80211 wiphy so the driver is also visible through the
+ * Linux wireless subsystem API. Called from rtl8188eu_init(). */
+void rtl8188eu_register_wiphy(void);
+
 #endif /* WIFI_USB_H */

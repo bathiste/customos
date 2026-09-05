@@ -14,7 +14,7 @@ SRC = src
 BUILD = build
 KERNEL = $(BUILD)/kernel.bin
 
-OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o $(BUILD)/pci.o $(BUILD)/virtio.o $(BUILD)/tcp.o $(BUILD)/udp.o $(BUILD)/http.o $(BUILD)/wifi.o $(BUILD)/wifi_usb.o $(BUILD)/usb_hcd.o
+OBJS = $(BUILD)/boot.o $(BUILD)/kernel.o $(BUILD)/io.o $(BUILD)/fs.o $(BUILD)/shell.o $(BUILD)/keyboard.o $(BUILD)/string.o $(BUILD)/gui.o $(BUILD)/mouse.o $(BUILD)/pci.o $(BUILD)/virtio.o $(BUILD)/tcp.o $(BUILD)/udp.o $(BUILD)/http.o $(BUILD)/wifi.o $(BUILD)/wifi_usb.o $(BUILD)/usb_hcd.o $(BUILD)/ndis.o $(BUILD)/cfg80211.o $(BUILD)/wlan_compat.o
 
 all: $(KERNEL)
 
@@ -82,6 +82,15 @@ $(BUILD)/usb_hcd.o: $(SRC)/usb_hcd.c $(SRC)/usb_hcd.h $(SRC)/pci.h $(SRC)/io.h |
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/wifi_usb.o: $(SRC)/wifi_usb.c $(SRC)/wifi_usb.h $(SRC)/usb_hcd.h $(SRC)/wifi.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/ndis.o: $(SRC)/ndis.c $(SRC)/ndis.h $(SRC)/wifi_usb.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/cfg80211.o: $(SRC)/cfg80211.c $(SRC)/cfg80211.h $(SRC)/wifi_usb.h $(SRC)/wifi.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/wlan_compat.o: $(SRC)/wlan_compat.c $(SRC)/wlan_compat.h $(SRC)/ndis.h $(SRC)/cfg80211.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(KERNEL): $(OBJS) | $(BUILD)
